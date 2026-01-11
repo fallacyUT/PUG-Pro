@@ -135,11 +135,7 @@ BOT_TOKEN = 'your-token-here'       # Discord bot token
 
 ## 🤝 Contributing
 
-This bot was developed by **fallacy** for competitive gaming communities. 
-
-**Found a bug?** Message **fallacy** on Discord.  
-**Feature request?** Message **fallacy** on Discord.  
-**Questions?** Message **fallacy** on Discord.
+This bot is developed for competitive gaming communities. 
 
 ## 📜 License
 
