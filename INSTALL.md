@@ -476,6 +476,3 @@ Your PUG Pro Bot is now installed and running!
 
 ---
 
-**Developed by:** fallacy  
-**For:** Competitive Gaming Communities  
-**Questions?** Message **fallacy** on Discord

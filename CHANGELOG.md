@@ -71,8 +71,4 @@ Potential features for future versions:
 
 ---
 
-**Questions or suggestions?** Message **fallacy** on Discord.
-
----
-
 *Bot made for Competitive Gaming Communities to use for Pick Up Games (PUGs)*

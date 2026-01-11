@@ -10,8 +10,6 @@ Originally developed for the UT2004 Unreal Fight Club Discord Community
 
 *Bot made for Competitive Gaming Communities to use for Pick Up Games (PUGs)*
 
-**Any questions? Please message fallacy on Discord.**
-
 ---
 
 ## 📋 Table of Contents
@@ -672,6 +670,3 @@ A: No, votes are final. Vote carefully!
 
 ---
 
-**Developed by:** fallacy  
-**For:** Competitive Gaming Communities  
-*Bot made for Competitive Gaming Communities to use for Pick Up Games (PUGs)*

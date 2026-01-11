@@ -10,8 +10,6 @@ Originally developed for the UT2004 Unreal Fight Club Discord Community
 
 *Bot made for Competitive Gaming Communities to use for Pick Up Games (PUGs)*
 
-**Any questions? Please message fallacy on Discord.**
-
 ---
 
 ## 📋 Overview
@@ -135,7 +133,7 @@ BOT_TOKEN = 'your-token-here'       # Discord bot token
 
 ## 🤝 Contributing
 
-This bot is developed for competitive gaming communities. 
+This bot was developed for competitive gaming communities. 
 
 ## 📜 License
 
