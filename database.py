@@ -924,6 +924,33 @@ class DatabaseManager:
         conn.close()
         return modes
     
+    def remove_mode(self, mode_name: str) -> tuple[bool, str]:
+        """Remove a game mode"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        # Check if mode exists
+        cursor.execute('SELECT mode_name FROM game_modes WHERE mode_name = ?', (mode_name,))
+        if not cursor.fetchone():
+            conn.close()
+            return False, f"Mode '{mode_name}' does not exist!"
+        
+        # Check if mode is 'default' (cannot remove default mode if it exists)
+        if mode_name == 'default':
+            conn.close()
+            return False, "Cannot remove the default mode!"
+        
+        # Remove mode and its aliases
+        try:
+            cursor.execute('DELETE FROM game_modes WHERE mode_name = ?', (mode_name,))
+            cursor.execute('DELETE FROM mode_aliases WHERE mode_name = ?', (mode_name,))
+            conn.commit()
+            conn.close()
+            return True, None
+        except Exception as e:
+            conn.close()
+            return False, str(e)
+    
     def add_mode_alias(self, alias: str, mode_name: str) -> tuple[bool, str]:
         """Add an alias for a game mode"""
         conn = self.get_connection()
