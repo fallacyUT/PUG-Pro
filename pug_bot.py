@@ -2189,8 +2189,8 @@ async def list_queue(ctx, game_mode: str = None):
         
         players = []
         for i, uid in enumerate(queue_list):
-            player_data = db_manager.get_player(uid, str(ctx.guild.id))
-            elo = player_data['elo']
+            # Use get_player_elo to check if mode has per-mode ELO enabled
+            elo = get_player_elo(uid, str(ctx.guild.id), game_mode_resolved)
             rank = get_elo_rank(elo)
             member = ctx.guild.get_member(uid)
             name = member.display_name if member else f"Player_{uid}"
@@ -2202,8 +2202,8 @@ async def list_queue(ctx, game_mode: str = None):
         if queue.waiting_queue:
             waiting_players = []
             for i, uid in enumerate(queue.waiting_queue):
-                player_data = db_manager.get_player(uid, str(ctx.guild.id))
-                elo = player_data['elo']
+                # Use get_player_elo to check if mode has per-mode ELO enabled
+                elo = get_player_elo(uid, str(ctx.guild.id), game_mode_resolved)
                 rank = get_elo_rank(elo)
                 member = ctx.guild.get_member(uid)
                 name = member.display_name if member else f"Player_{uid}"
@@ -2239,8 +2239,8 @@ async def list_queue(ctx, game_mode: str = None):
                 mode_data = db_manager.get_game_mode(queue.game_mode_name)
                 players = []
                 for uid in queue.queue:
-                    player_data = db_manager.get_player(uid, str(ctx.guild.id))
-                    elo = player_data['elo']
+                    # Use get_player_elo to check if mode has per-mode ELO enabled
+                    elo = get_player_elo(uid, str(ctx.guild.id), queue.game_mode_name)
                     rank = get_elo_rank(elo)
                     member = ctx.guild.get_member(uid)
                     name = member.display_name if member else f"Player_{uid}"
@@ -3791,6 +3791,28 @@ async def my_stats(ctx):
     # Add leaderboard position
     if position:
         embed.add_field(name="Leaderboard", value=f"#{position} of {total_players}", inline=True)
+    
+    # Add per-mode ELOs if any modes have per-mode ELO enabled
+    modes_with_per_mode_elo = db_manager.get_modes_with_per_mode_elo()
+    if modes_with_per_mode_elo:
+        mode_elos = db_manager.get_all_player_mode_elos(str(ctx.author.id), str(ctx.guild.id))
+        
+        if mode_elos:
+            mode_elo_lines = []
+            for mode_name in modes_with_per_mode_elo:
+                if mode_name in mode_elos:
+                    mode_elo = mode_elos[mode_name]['elo']
+                    mode_rank = get_elo_rank(mode_elo)
+                    mode_wins = mode_elos[mode_name]['wins']
+                    mode_losses = mode_elos[mode_name]['losses']
+                    mode_elo_lines.append(f"**{mode_name}:** {mode_elo:.0f} ({mode_rank}) - {mode_wins}W/{mode_losses}L")
+            
+            if mode_elo_lines:
+                embed.add_field(
+                    name="📊 Per-Mode ELOs",
+                    value="\n".join(mode_elo_lines),
+                    inline=False
+                )
     
     await ctx.send(embed=embed)
 
