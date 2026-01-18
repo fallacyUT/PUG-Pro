@@ -324,4 +324,4 @@ Use whichever name fits your community!
 **For:** Competitive Gaming Communities  
 *Bot made for Competitive Gaming Communities to use for Pick Up Games (PUGs)*
 
-**Version 2.0** - Mode-Specific Per-Mode ELO & Queue Timeout Fix
+**Version 2.1** - Mode-Specific Per-Mode ELO & Queue Timeout Fix

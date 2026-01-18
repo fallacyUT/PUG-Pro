@@ -312,7 +312,8 @@ class DatabaseManager:
                 team_size INTEGER NOT NULL,
                 description TEXT,
                 per_mode_elo_enabled INTEGER DEFAULT 0,
-                elo_prefix TEXT
+                elo_prefix TEXT,
+                tiebreaker_enabled INTEGER DEFAULT 1
             )
         ''')
         
@@ -323,6 +324,14 @@ class DatabaseManager:
             cursor.execute("ALTER TABLE game_modes ADD COLUMN elo_prefix TEXT")
             conn.commit()
             print("✅ Database migration: Added 'elo_prefix' column to game_modes table")
+        
+        # Migration: Add tiebreaker_enabled column if it doesn't exist
+        try:
+            cursor.execute("SELECT tiebreaker_enabled FROM game_modes LIMIT 1")
+        except:
+            cursor.execute("ALTER TABLE game_modes ADD COLUMN tiebreaker_enabled INTEGER DEFAULT 1")
+            conn.commit()
+            print("✅ Database migration: Added 'tiebreaker_enabled' column to game_modes table")
         
         # Migration: Add per_mode_elo_enabled column if it doesn't exist
         try:
@@ -357,6 +366,29 @@ class DatabaseManager:
                 last_updated TEXT DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (discord_id, server_id, mode_name),
                 FOREIGN KEY (mode_name) REFERENCES game_modes(mode_name) ON DELETE CASCADE
+            )
+        ''')
+        
+        # Maps table - store maps per mode/prefix
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS maps (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                server_id TEXT NOT NULL,
+                mode_prefix TEXT NOT NULL,
+                map_name TEXT NOT NULL,
+                added_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(server_id, mode_prefix, map_name)
+            )
+        ''')
+        
+        # Map cooldowns table - track recently used maps per server
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS map_cooldowns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                server_id TEXT NOT NULL,
+                mode_prefix TEXT NOT NULL,
+                map_name TEXT NOT NULL,
+                used_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         
@@ -1481,3 +1513,160 @@ class DatabaseManager:
             }
         
         return result
+
+    
+    # Map management operations
+    def add_map(self, server_id: str, mode_prefix: str, map_name: str) -> tuple:
+        """Add a map to a mode's map pool"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('''
+                INSERT INTO maps (server_id, mode_prefix, map_name)
+                VALUES (?, ?, ?)
+            ''', (server_id, mode_prefix.lower(), map_name))
+            
+            conn.commit()
+            conn.close()
+            return True, None
+        except Exception as e:
+            conn.close()
+            if 'UNIQUE constraint' in str(e):
+                return False, f"Map '{map_name}' already exists for {mode_prefix}!"
+            return False, str(e)
+    
+    def remove_map(self, server_id: str, mode_prefix: str, map_name: str) -> tuple:
+        """Remove a map from a mode's map pool"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            DELETE FROM maps
+            WHERE server_id = ? AND mode_prefix = ? AND map_name = ?
+        ''', (server_id, mode_prefix.lower(), map_name))
+        
+        deleted = cursor.rowcount > 0
+        conn.commit()
+        conn.close()
+        
+        if deleted:
+            return True, None
+        else:
+            return False, f"Map '{map_name}' not found for {mode_prefix}!"
+    
+    def get_maps_for_mode(self, server_id: str, mode_prefix: str) -> list:
+        """Get all maps for a specific mode/prefix"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT map_name FROM maps
+            WHERE server_id = ? AND mode_prefix = ?
+            ORDER BY map_name
+        ''', (server_id, mode_prefix.lower()))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        return [row[0] for row in rows]
+    
+    def get_all_maps_grouped(self, server_id: str) -> dict:
+        """Get all maps grouped by mode prefix"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT mode_prefix, map_name FROM maps
+            WHERE server_id = ?
+            ORDER BY mode_prefix, map_name
+        ''', (server_id,))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        result = {}
+        for prefix, map_name in rows:
+            if prefix not in result:
+                result[prefix] = []
+            result[prefix].append(map_name)
+        
+        return result
+    
+    def add_map_to_cooldown(self, server_id: str, mode_prefix: str, map_name: str):
+        """Add a map to the cooldown list"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO map_cooldowns (server_id, mode_prefix, map_name)
+            VALUES (?, ?, ?)
+        ''', (server_id, mode_prefix.lower(), map_name))
+        
+        conn.commit()
+        conn.close()
+    
+    def get_maps_on_cooldown(self, server_id: str, mode_prefix: str, cooldown_count: int = 3) -> list:
+        """Get the most recently used maps (on cooldown)"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT map_name FROM map_cooldowns
+            WHERE server_id = ? AND mode_prefix = ?
+            ORDER BY used_at DESC
+            LIMIT ?
+        ''', (server_id, mode_prefix.lower(), cooldown_count))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        return [row[0] for row in rows]
+    
+    def clear_old_cooldowns(self, server_id: str, mode_prefix: str, keep_count: int = 10):
+        """Clear old cooldown entries"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            DELETE FROM map_cooldowns
+            WHERE server_id = ? AND mode_prefix = ?
+            AND id NOT IN (
+                SELECT id FROM map_cooldowns
+                WHERE server_id = ? AND mode_prefix = ?
+                ORDER BY used_at DESC
+                LIMIT ?
+            )
+        ''', (server_id, mode_prefix.lower(), server_id, mode_prefix.lower(), keep_count))
+        
+        conn.commit()
+        conn.close()
+    
+    def set_tiebreaker_enabled(self, mode_name: str, enabled: bool) -> tuple:
+        """Enable or disable tiebreaker for a specific mode"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT mode_name FROM game_modes WHERE mode_name = ?', (mode_name,))
+        if not cursor.fetchone():
+            conn.close()
+            return False, f"Mode '{mode_name}' does not exist!"
+        
+        cursor.execute('''
+            UPDATE game_modes SET tiebreaker_enabled = ? WHERE mode_name = ?
+        ''', (1 if enabled else 0, mode_name))
+        
+        conn.commit()
+        conn.close()
+        return True, None
+    
+    def is_tiebreaker_enabled(self, mode_name: str) -> bool:
+        """Check if tiebreaker is enabled for a mode"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT tiebreaker_enabled FROM game_modes WHERE mode_name = ?', (mode_name,))
+        row = cursor.fetchone()
+        
+        conn.close()
+        return row[0] == 1 if row and row[0] is not None else True  # Default to enabled

@@ -10,7 +10,7 @@
 
 ---
 
-## 🎯 What's New in Version 2.0
+## 🎯 What's New in Version 2.1
 
 ### Major Update: Mode-Specific Per-Mode ELO
 

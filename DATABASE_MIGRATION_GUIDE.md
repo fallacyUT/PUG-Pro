@@ -14,7 +14,7 @@ This guide explains how to migrate your existing PUG Pro Bot database to newer v
 
 ## Important: Data Preservation
 
-### ✅ Version 2.0+ Migrations Are Safe!
+### ✅ Version 2.1+ Migrations Are Safe!
 
 Starting with version 2.0, all database migrations are **non-destructive**:
 - ✅ All player ELOs are preserved

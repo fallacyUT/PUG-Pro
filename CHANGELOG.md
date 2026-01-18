@@ -5,8 +5,38 @@ Originally developed for the UT2004 Unreal Fight Club Discord Community
 
 
 **PUG Pro Discord Bot**  
-**Version:** 2.0  
+**Version:** 2.1  
 **Developed by:** fallacy
+
+---
+
+## Version 2.1 (January 2026)
+
+### New Features
+
+**Bulk Map Adding:**
+- Add multiple maps at once with comma separation
+- Example: `.addmap ctf CTF-Face, CTF-LavaGiant, CTF-Orbital`
+- Saves time for admins setting up map pools
+
+**Per-Mode Tiebreaker Toggle:**
+- Enable/disable tiebreaker map selection per mode
+- `.tiebreaker <mode> on/off` command
+- Allows modes without tiebreakers even if maps are configured
+
+### Commands Added
+- `.tiebreaker <mode> [on/off]` - Toggle or check tiebreaker status for a mode
+
+### Commands Updated
+- `.addmap <prefix> <maps>` - Now supports comma-separated list of maps
+
+### Database Changes
+- Added `tiebreaker_enabled` column to `game_modes` table (defaults to enabled)
+
+### Documentation
+- All documentation updated to version 2.1
+- Removed redundant sections from documentation files
+- Updated command examples to show bulk map adding
 
 ---
 
@@ -25,6 +55,13 @@ Originally developed for the UT2004 Unreal Fight Club Discord Community
 - Players maintain consistent ELO across team sizes of the same game type
 - Set with `.seteloprefix <mode> <prefix>`
 
+**Database-Backed Map Pool System:**
+- Maps now stored in database, persist across bot updates and restarts
+- Per-mode map pools using mode prefixes
+- Modes with same prefix share map pools (e.g., all CTF modes use 'ctf' maps)
+- Map cooldown system prevents recent maps from repeating
+- Commands: `.addmap <prefix> <map>`, `.removemap <prefix> <map>`, `.maps [prefix]`
+
 **Queue Timeout Fix:**
 - Queue timeout now resets every time a player joins (not just first player)
 - Ensures fair treatment of recent joiners
@@ -34,7 +71,10 @@ Originally developed for the UT2004 Unreal Fight Club Discord Community
 - `.permodeelo <mode>` - Toggle per-mode ELO for specific mode
 - `.permodeelostatus` - Show which modes have per-mode ELO enabled
 - `.setmodeelo <mode> <player> <elo>` - Set mode-specific ELO
-- `.seteloprefix <mode> <prefix>` - Set ELO prefix to group modes (NEW!)
+- `.seteloprefix <mode> <prefix>` - Set ELO prefix to group modes
+- `.addmap <prefix> <map>` - Add map to mode's map pool (UPDATED - now requires prefix)
+- `.removemap <prefix> <map>` - Remove map from mode's map pool (UPDATED - now requires prefix)
+- `.maps [prefix]` - List maps, optionally filtered by prefix (UPDATED)
 - `.pugproon` - Alias for `.tamproon` (enable bot)
 - `.pugprooff` - Alias for `.tamprooff` (disable bot)
 
@@ -44,7 +84,9 @@ Originally developed for the UT2004 Unreal Fight Club Discord Community
 
 ### Database Changes
 - Added `per_mode_elo_enabled` column to `game_modes` table
-- Added `elo_prefix` column to `game_modes` table (NEW!)
+- Added `elo_prefix` column to `game_modes` table
+- Added `maps` table for persistent map storage per mode
+- Added `map_cooldowns` table for map cooldown tracking
 - Automatic migration for existing databases
 - **CRITICAL FIX:** All migrations now preserve existing data (no more data loss!)
 
@@ -56,7 +98,8 @@ Originally developed for the UT2004 Unreal Fight Club Discord Community
 
 ### Documentation
 - Added DATABASE_MIGRATION_GUIDE.md - Complete migration guide ensuring data preservation
-- Added ELO_PREFIX_GUIDE.md - Complete guide to ELO prefix system (NEW!)
+- Added ELO_PREFIX_GUIDE.md - Complete guide to ELO prefix system
+- Added MAP_POOL_GUIDE.md - Complete guide to database-backed map pools (NEW!)
 - Added PER_MODE_ELO_V2_GUIDE.md - Complete guide to mode-specific per-mode ELO
 - Added QUEUE_TIMEOUT_FIX.md - Explanation of queue timeout behavior
 - Updated COMMANDS.md with v2.0 commands
