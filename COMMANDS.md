@@ -4,8 +4,9 @@ A customizable version of the TAM Pro Bot
 Originally developed for the UT2004 Unreal Fight Club Discord Community
 
 
-**PUG Pro Discord Bot**
-**Developed by:** fallacy
+**PUG Pro Discord Bot**  
+**Version:** 2.0  
+**Developed by:** fallacy  
 **Any questions? Please message fallacy on Discord.**
 
 ---
@@ -21,8 +22,8 @@ Originally developed for the UT2004 Unreal Fight Club Discord Community
 
 ### Queue Management
 ```
-.j competitive                      - Join default 4v4 mode
-.j <mode>                    - Join specific mode (2v2, 6v6, etc.)
+.j competitive               - Join default mode
+.j <mode>                    - Join specific mode (e.g., tam, ctf, casual)
 ++                           - Quick join all active queues
 ++ <mode>                    - Quick join specific mode
 .l                           - Leave all queues
@@ -70,10 +71,17 @@ Originally developed for the UT2004 Unreal Fight Club Discord Community
 
 ### Player Management
 ```
-.setelo @player <elo>        - Set player's ELO
+.setelo @player <elo>        - Set player's global ELO
 .setpugs @player <count>     - Set player's total PUG count
 .deleteplayer @player        - Delete player from database
 .undoplayerpugs @player      - Reset player's wins/losses to match total PUGs
+```
+
+### Per-Mode ELO Management (v2.0 NEW!)
+```
+.permodeelo <mode>                    - Toggle per-mode ELO for specific mode
+.permodelostatus                      - Show which modes have per-mode ELO enabled
+.setmodeelo <mode> @player <elo>      - Set player's ELO for specific mode
 ```
 
 ### PUG Management
@@ -117,8 +125,8 @@ Originally developed for the UT2004 Unreal Fight Club Discord Community
 
 ### Bot Control
 ```
-.tamproon                    - Enable bot
-.tamprooff                   - Disable bot
+.tamproon / .pugproon        - Enable bot (aliases)
+.tamprooff / .pugprooff      - Disable bot (aliases)
 .leaderboard                 - Create/update leaderboard (in #leaderboard)
 .cleartopelo                 - Clear top ELO cache
 ```
@@ -133,6 +141,40 @@ Originally developed for the UT2004 Unreal Fight Club Discord Community
 
 ---
 
+## v2.0 New Features
+
+### Mode-Specific Per-Mode ELO
+Enable per-mode ELO for individual modes instead of all-or-nothing:
+
+```
+.permodeelo tam              - Toggle per-mode ELO for TAM mode
+.permodeelo ctf              - Toggle per-mode ELO for CTF mode
+.permodelostatus             - See which modes have per-mode ELO
+
+.setmodeelo tam @Player 1700 - Set TAM-specific ELO
+.setmodeelo ctf @Player 1100 - Set CTF-specific ELO
+```
+
+**Benefits:**
+- Enable per-mode ELO only for competitive modes
+- Leave casual modes using global ELO
+- More flexible and easier to manage
+
+**Example Setup:**
+```
+.permodeelo tam       # TAM uses mode-specific ELO (e.g., 1700)
+.permodeelo ctf       # CTF uses mode-specific ELO (e.g., 1100)
+# casual mode uses global ELO (e.g., 1400)
+```
+
+### Queue Timeout Fix
+Queue timeout now resets every time a player joins, not just when the first player joins.
+
+**Before:** Queue cleared even if players recently joined  
+**Now:** Queue only clears after 4 hours of no new joins
+
+---
+
 ## Command Format Examples
 
 ### Time Formats
@@ -141,6 +183,14 @@ Originally developed for the UT2004 Unreal Fight Club Discord Community
 .expire 30m      → 30 minutes
 .expire 1h       → 1 hour
 .expire 2h30m    → 2 hours 30 minutes
+```
+
+### Per-Mode ELO Examples
+```
+.permodeelo tam              → Enable/disable per-mode ELO for TAM
+.setmodeelo tam @Player 1650 → Set Player's TAM ELO to 1650
+.setmodeelo ctf @Player 1200 → Set Player's CTF ELO to 1200
+.permodelostatus             → Show which modes have per-mode ELO
 ```
 
 ### CSV Import Format
@@ -177,17 +227,18 @@ SkillMaster,200,'906568123456789012
 
 ### Admin Role Required
 - .setelo, .setpugs, .deleteplayer
+- **NEW: .permodeelo, .permodelostatus, .setmodeelo**
 - .setwinner, .undowinner, .forcedeadpug, .undodeadpug
 - .reset, .resetall, .add, .remove
 - .addmode, .removemode, .addalias, .removealias
 - .autopick, .autopickoff, .setmapcooldown
 - .exportstats, .importelos, .updateplayerpugs
 - .reseteloall, .resetplayerpugs
-- .tamproon, .tamprooff
+- .tamproon, .tamprooff, .pugproon, .pugprooff
 - .pickforred, .pickforblue
 
 ### Channel Restrictions
-- Most commands: #tampro (or configured PUG channel)
+- Most commands: Configured PUG channel (e.g., #tampro, #pugs)
 - .leaderboard: #leaderboard channel only
 
 ---
@@ -197,7 +248,7 @@ SkillMaster,200,'906568123456789012
 ### Starting a PUG
 ```
 1. .j competitive          (join queue)
-2. Wait for 8/8
+2. Wait for full queue
 3. Click ✅ in ready check
 4. Pick teams or wait for autopick
 5. Join server and play
@@ -217,12 +268,60 @@ SkillMaster,200,'906568123456789012
 .leaderboard        (full rankings)
 ```
 
-### Admin Setup
+### Admin Setup: Basic
 ```
-1. .addmode 6v6 6   (create mode)
-2. .autopick 6v6    (enable autopick)
-3. .setelo @new 1000 (set player ELO)
+1. .addmode tam 8       (create 4v4 mode)
+2. .autopick tam        (enable autopick)
+3. .setelo @new 1000    (set player ELO)
+```
+
+### Admin Setup: Per-Mode ELO (v2.0)
+```
+1. .addmode tam 8           (create TAM mode)
+2. .addmode ctf 8           (create CTF mode)
+3. .permodeelo tam          (enable per-mode ELO for TAM)
+4. .permodeelo ctf          (enable per-mode ELO for CTF)
+5. .setmodeelo tam @p 1500  (set TAM ELO)
+6. .setmodeelo ctf @p 1200  (set CTF ELO)
 ```
 
 ---
 
+## Bot Aliases
+
+The following commands have aliases for convenience:
+
+### Bot Control
+```
+.tamproon  = .pugproon       Both enable the bot
+.tamprooff = .pugprooff      Both disable the bot
+```
+
+Use whichever name fits your community!
+
+---
+
+## Changelog Highlights (v2.0)
+
+### New Commands
+- `.permodeelo <mode>` - Toggle per-mode ELO for specific mode
+- `.permodelostatus` - Show per-mode ELO breakdown
+- `.setmodeelo <mode> <player> <elo>` - Set mode-specific ELO
+- `.pugproon` / `.pugprooff` - Aliases for bot control
+
+### Removed Commands
+- `.permodeelon` - Replaced by `.permodeelo <mode>`
+- `.permodeeloff` - Replaced by `.permodeelo <mode>`
+
+### Improved Features
+- Queue timeout now resets on every player join
+- Per-mode ELO can be enabled per individual mode
+- Better flexibility for mixed competitive/casual communities
+
+---
+
+**Developed by:** fallacy  
+**For:** Competitive Gaming Communities  
+*Bot made for Competitive Gaming Communities to use for Pick Up Games (PUGs)*
+
+**Version 2.0** - Mode-Specific Per-Mode ELO & Queue Timeout Fix

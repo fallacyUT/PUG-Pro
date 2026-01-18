@@ -4,11 +4,13 @@ A customizable version of the TAM Pro Bot
 Originally developed for the UT2004 Unreal Fight Club Discord Community
 
 
-**Version:** 1.0  
+**Version:** 2.0  
 **Developed by:** fallacy  
 **For:** Competitive Gaming Communities  
 
 *Bot made for Competitive Gaming Communities to use for Pick Up Games (PUGs)*
+
+**Any questions? Please message fallacy on Discord.**
 
 ---
 
@@ -133,7 +135,11 @@ BOT_TOKEN = 'your-token-here'       # Discord bot token
 
 ## 🤝 Contributing
 
-This bot was developed for competitive gaming communities. 
+This bot was developed by **fallacy** for competitive gaming communities. 
+
+**Found a bug?** Message **fallacy** on Discord.  
+**Feature request?** Message **fallacy** on Discord.  
+**Questions?** Message **fallacy** on Discord.
 
 ## 📜 License
 
