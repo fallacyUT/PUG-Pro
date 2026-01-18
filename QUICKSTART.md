@@ -5,6 +5,7 @@ Originally developed for the UT2004 Unreal Fight Club Discord Community
 
 
 **Developed by:** fallacy  
+**Any questions? Please message fallacy on Discord.**
 
 ---
 
@@ -77,6 +78,7 @@ Bot: YourName joined 4v4 (1/8)
 
 **Need more help?**
 - Check [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
+- Message **fallacy** on Discord
 
 ---
 
@@ -105,3 +107,7 @@ LICENSE.txt             - MIT License
 **Questions?** Message **fallacy** on Discord.
 
 ---
+
+**Developed by:** fallacy  
+**For:** Competitive Gaming Communities  
+*Bot made for Competitive Gaming Communities to use for Pick Up Games (PUGs)*

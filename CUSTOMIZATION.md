@@ -379,3 +379,6 @@ Common issues:
 
 ---
 
+**Developed by:** fallacy
+**For:** Competitive Gaming Communities
+*Bot made for Competitive Gaming Communities to use for Pick Up Games (PUGs)*

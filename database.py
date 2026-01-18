@@ -242,15 +242,43 @@ class DatabaseManager:
                 mode_name TEXT PRIMARY KEY,
                 display_name TEXT NOT NULL,
                 team_size INTEGER NOT NULL,
-                description TEXT
+                description TEXT,
+                per_mode_elo_enabled INTEGER DEFAULT 0
             )
         ''')
+        
+        # Migration: Add per_mode_elo_enabled column if it doesn't exist
+        try:
+            cursor.execute("SELECT per_mode_elo_enabled FROM game_modes LIMIT 1")
+        except:
+            cursor.execute("ALTER TABLE game_modes ADD COLUMN per_mode_elo_enabled INTEGER DEFAULT 0")
+            conn.commit()
+            print("✅ Database migration: Added 'per_mode_elo_enabled' column to game_modes table")
         
         # Mode Aliases table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS mode_aliases (
                 alias TEXT PRIMARY KEY,
                 mode_name TEXT NOT NULL,
+                FOREIGN KEY (mode_name) REFERENCES game_modes(mode_name) ON DELETE CASCADE
+            )
+        ''')
+        
+        # Player Mode ELOs table - separate ELO per mode per player
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS player_mode_elos (
+                discord_id TEXT,
+                server_id TEXT,
+                mode_name TEXT,
+                elo REAL DEFAULT 1000,
+                wins INTEGER DEFAULT 0,
+                losses INTEGER DEFAULT 0,
+                peak_elo REAL DEFAULT 1000,
+                current_streak INTEGER DEFAULT 0,
+                best_win_streak INTEGER DEFAULT 0,
+                best_loss_streak INTEGER DEFAULT 0,
+                last_updated TEXT DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (discord_id, server_id, mode_name),
                 FOREIGN KEY (mode_name) REFERENCES game_modes(mode_name) ON DELETE CASCADE
             )
         ''')
@@ -271,6 +299,12 @@ class DatabaseManager:
         cursor.execute('''
             INSERT OR IGNORE INTO bot_settings (key, value)
             VALUES ('scraping_enabled', 'false')
+        ''')
+        
+        # Initialize per-mode ELO setting
+        cursor.execute('''
+            INSERT OR IGNORE INTO bot_settings (key, value)
+            VALUES ('per_mode_elo_enabled', 'false')
         ''')
         
         # Initialize pug counter
@@ -1055,3 +1089,254 @@ class DatabaseManager:
     def set_scraping_enabled(self, enabled: bool):
         """Enable or disable scraping"""
         self.set_setting('scraping_enabled', 'true' if enabled else 'false')
+    
+    # Per-Mode ELO Functions
+    def is_per_mode_elo_enabled(self, mode_name: str = None) -> bool:
+        """Check if per-mode ELO is enabled for a specific mode
+        
+        Args:
+            mode_name: Mode to check. If None, checks global setting (deprecated)
+            
+        Returns:
+            bool: True if the mode has per-mode ELO enabled
+        """
+        if mode_name:
+            # Check mode-specific setting
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                SELECT per_mode_elo_enabled FROM game_modes WHERE mode_name = ?
+            ''', (mode_name,))
+            
+            row = cursor.fetchone()
+            conn.close()
+            
+            if row:
+                return row[0] == 1
+            return False
+        else:
+            # Legacy: Check global setting (deprecated)
+            value = self.get_setting('per_mode_elo_enabled')
+            return value == 'true' if value else False
+    
+    def set_per_mode_elo_for_mode(self, mode_name: str, enabled: bool) -> tuple[bool, str]:
+        """Enable or disable per-mode ELO for a specific mode
+        
+        Args:
+            mode_name: The mode to configure
+            enabled: True to enable, False to disable
+            
+        Returns:
+            tuple: (success: bool, error_message: str or None)
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        # Check if mode exists
+        cursor.execute('SELECT mode_name FROM game_modes WHERE mode_name = ?', (mode_name,))
+        if not cursor.fetchone():
+            conn.close()
+            return False, f"Mode '{mode_name}' does not exist!"
+        
+        # Update per_mode_elo_enabled flag
+        cursor.execute('''
+            UPDATE game_modes SET per_mode_elo_enabled = ? WHERE mode_name = ?
+        ''', (1 if enabled else 0, mode_name))
+        
+        conn.commit()
+        conn.close()
+        return True, None
+    
+    def get_modes_with_per_mode_elo(self) -> list:
+        """Get list of modes that have per-mode ELO enabled"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT mode_name FROM game_modes WHERE per_mode_elo_enabled = 1
+        ''')
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        return [row[0] for row in rows]
+    
+    def set_per_mode_elo_enabled(self, enabled: bool):
+        """Enable or disable per-mode ELO (deprecated - kept for compatibility)"""
+        self.set_setting('per_mode_elo_enabled', 'true' if enabled else 'false')
+    
+    def get_player_mode_elo(self, discord_id: str, server_id: str, mode_name: str) -> Dict:
+        """Get player's ELO for a specific mode"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT elo, wins, losses, peak_elo, current_streak, best_win_streak, best_loss_streak
+            FROM player_mode_elos
+            WHERE discord_id = ? AND server_id = ? AND mode_name = ?
+        ''', (discord_id, server_id, mode_name))
+        
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row:
+            return {
+                'elo': row[0],
+                'wins': row[1],
+                'losses': row[2],
+                'peak_elo': row[3],
+                'current_streak': row[4],
+                'best_win_streak': row[5],
+                'best_loss_streak': row[6]
+            }
+        else:
+            # Return default values if not found
+            return {
+                'elo': 1000,
+                'wins': 0,
+                'losses': 0,
+                'peak_elo': 1000,
+                'current_streak': 0,
+                'best_win_streak': 0,
+                'best_loss_streak': 0
+            }
+    
+    def init_player_mode_elo(self, discord_id: str, server_id: str, mode_name: str, starting_elo: float = 1000):
+        """Initialize a player's ELO for a specific mode"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT OR IGNORE INTO player_mode_elos 
+            (discord_id, server_id, mode_name, elo, peak_elo)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (discord_id, server_id, mode_name, starting_elo, starting_elo))
+        
+        conn.commit()
+        conn.close()
+    
+    def update_player_mode_elo(self, discord_id: str, server_id: str, mode_name: str, new_elo: float):
+        """Update player's ELO for a specific mode"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        # Get current peak ELO
+        cursor.execute('''
+            SELECT peak_elo FROM player_mode_elos
+            WHERE discord_id = ? AND server_id = ? AND mode_name = ?
+        ''', (discord_id, server_id, mode_name))
+        
+        row = cursor.fetchone()
+        peak_elo = row[0] if row else new_elo
+        
+        # Update peak if new ELO is higher
+        if new_elo > peak_elo:
+            peak_elo = new_elo
+        
+        # Upsert (insert or update)
+        cursor.execute('''
+            INSERT OR REPLACE INTO player_mode_elos 
+            (discord_id, server_id, mode_name, elo, peak_elo, wins, losses, current_streak, best_win_streak, best_loss_streak, last_updated)
+            VALUES (
+                ?, ?, ?, ?, ?,
+                COALESCE((SELECT wins FROM player_mode_elos WHERE discord_id = ? AND server_id = ? AND mode_name = ?), 0),
+                COALESCE((SELECT losses FROM player_mode_elos WHERE discord_id = ? AND server_id = ? AND mode_name = ?), 0),
+                COALESCE((SELECT current_streak FROM player_mode_elos WHERE discord_id = ? AND server_id = ? AND mode_name = ?), 0),
+                COALESCE((SELECT best_win_streak FROM player_mode_elos WHERE discord_id = ? AND server_id = ? AND mode_name = ?), 0),
+                COALESCE((SELECT best_loss_streak FROM player_mode_elos WHERE discord_id = ? AND server_id = ? AND mode_name = ?), 0),
+                CURRENT_TIMESTAMP
+            )
+        ''', (discord_id, server_id, mode_name, new_elo, peak_elo,
+              discord_id, server_id, mode_name,
+              discord_id, server_id, mode_name,
+              discord_id, server_id, mode_name,
+              discord_id, server_id, mode_name,
+              discord_id, server_id, mode_name))
+        
+        conn.commit()
+        conn.close()
+    
+    def update_player_mode_stats(self, discord_id: str, server_id: str, mode_name: str, won: bool):
+        """Update player's win/loss stats for a specific mode"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        # Initialize if doesn't exist
+        self.init_player_mode_elo(discord_id, server_id, mode_name)
+        
+        # Get current stats
+        cursor.execute('''
+            SELECT wins, losses, current_streak, best_win_streak, best_loss_streak
+            FROM player_mode_elos
+            WHERE discord_id = ? AND server_id = ? AND mode_name = ?
+        ''', (discord_id, server_id, mode_name))
+        
+        row = cursor.fetchone()
+        if not row:
+            wins, losses, current_streak, best_win_streak, best_loss_streak = 0, 0, 0, 0, 0
+        else:
+            wins, losses, current_streak, best_win_streak, best_loss_streak = row
+        
+        if won:
+            wins += 1
+            current_streak = current_streak + 1 if current_streak >= 0 else 1
+            if current_streak > best_win_streak:
+                best_win_streak = current_streak
+        else:
+            losses += 1
+            current_streak = current_streak - 1 if current_streak <= 0 else -1
+            if abs(current_streak) > best_loss_streak:
+                best_loss_streak = abs(current_streak)
+        
+        cursor.execute('''
+            UPDATE player_mode_elos
+            SET wins = ?, losses = ?, current_streak = ?, best_win_streak = ?, best_loss_streak = ?
+            WHERE discord_id = ? AND server_id = ? AND mode_name = ?
+        ''', (wins, losses, current_streak, best_win_streak, best_loss_streak, discord_id, server_id, mode_name))
+        
+        conn.commit()
+        conn.close()
+    
+    def set_player_mode_elo(self, discord_id: str, server_id: str, mode_name: str, new_elo: float):
+        """Admin function to set a player's ELO for a specific mode"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        # Check if mode exists
+        cursor.execute('SELECT mode_name FROM game_modes WHERE mode_name = ?', (mode_name,))
+        if not cursor.fetchone():
+            conn.close()
+            return False, f"Mode '{mode_name}' does not exist!"
+        
+        # Initialize or update
+        self.update_player_mode_elo(discord_id, server_id, mode_name, new_elo)
+        
+        conn.close()
+        return True, None
+    
+    def get_all_player_mode_elos(self, discord_id: str, server_id: str) -> Dict:
+        """Get all mode-specific ELOs for a player"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT mode_name, elo, wins, losses, peak_elo
+            FROM player_mode_elos
+            WHERE discord_id = ? AND server_id = ?
+            ORDER BY elo DESC
+        ''', (discord_id, server_id))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        result = {}
+        for row in rows:
+            result[row[0]] = {
+                'elo': row[1],
+                'wins': row[2],
+                'losses': row[3],
+                'peak_elo': row[4]
+            }
+        
+        return result

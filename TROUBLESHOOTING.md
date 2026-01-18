@@ -281,3 +281,9 @@ If no response, check console for errors.
 
 ---
 
+**Still having issues?** Message **fallacy** on Discord!
+
+---
+
+**Developed by:** fallacy
+*Bot made for Competitive Gaming Communities to use for Pick Up Games (PUGs)*

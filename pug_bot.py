@@ -221,9 +221,9 @@ class PUGQueue:
         # Add to active queue
         self.queue.append(user.id)
         
-        # Start inactivity timer if this is the first player
-        if len(self.queue) == 1:
-            await self.start_inactivity_timer()
+        # Reset inactivity timer on every player join (not just first player)
+        # This ensures the 4-hour countdown restarts with each new join
+        await self.start_inactivity_timer()
         
         await self.check_queue_full()
         return True, None
@@ -422,12 +422,16 @@ class PUGQueue:
                 self.inactivity_timer = None
     
     async def start_inactivity_timer(self):
-        """Start a background task to check for inactivity"""
+        """Start/restart a background task to check for inactivity
+        
+        This resets the 4-hour countdown every time it's called.
+        Gets called whenever a player joins the queue.
+        """
         import time
         
-        # Set queue start time if not already set
-        if self.queue_start_time is None:
-            self.queue_start_time = time.time()
+        # Always update queue start time to current time
+        # This resets the 4-hour countdown
+        self.queue_start_time = time.time()
         
         # Cancel existing timer if any
         if self.inactivity_timer:
@@ -1087,9 +1091,9 @@ class PUGQueue:
         
         # Include match prediction if picking is complete
         if include_prediction and len(self.red_team) == self.max_per_team and len(self.blue_team) == self.max_per_team:
-            # Calculate team ELO averages
-            red_elos = [db_manager.get_player(uid, self.server_id)['elo'] for uid in self.red_team]
-            blue_elos = [db_manager.get_player(uid, self.server_id)['elo'] for uid in self.blue_team]
+            # Calculate team ELO averages (mode-aware)
+            red_elos = [get_player_elo(uid, self.server_id, self.game_mode_name) for uid in self.red_team]
+            blue_elos = [get_player_elo(uid, self.server_id, self.game_mode_name) for uid in self.blue_team]
             
             avg_red_elo = sum(red_elos) / len(red_elos)
             avg_blue_elo = sum(blue_elos) / len(blue_elos)
@@ -1177,9 +1181,9 @@ class PUGQueue:
             
             mode_data = db_manager.get_game_mode(self.game_mode_name)
             
-            # Calculate team ELO averages for database
-            red_elos = [db_manager.get_player(uid, self.server_id)['elo'] for uid in self.red_team]
-            blue_elos = [db_manager.get_player(uid, self.server_id)['elo'] for uid in self.blue_team]
+            # Calculate team ELO averages for database (mode-aware)
+            red_elos = [get_player_elo(uid, self.server_id, self.game_mode_name) for uid in self.red_team]
+            blue_elos = [get_player_elo(uid, self.server_id, self.game_mode_name) for uid in self.blue_team]
             
             avg_red_elo = sum(red_elos) / len(red_elos)
             avg_blue_elo = sum(blue_elos) / len(blue_elos)
@@ -1376,6 +1380,26 @@ def get_elo_rank(elo):
         return 'C'
     else:
         return 'D'
+
+def get_player_elo(discord_id, server_id, mode_name=None):
+    """Get player's ELO - mode-specific if that mode has per-mode ELO enabled, else global
+    
+    Args:
+        discord_id: Player's Discord ID
+        server_id: Server ID
+        mode_name: Game mode name (optional)
+        
+    Returns:
+        float: Player's ELO rating (mode-specific or global)
+    """
+    if mode_name and db_manager.is_per_mode_elo_enabled(mode_name):
+        # This mode has per-mode ELO enabled - use mode-specific ELO
+        mode_elo_data = db_manager.get_player_mode_elo(discord_id, server_id, mode_name)
+        return mode_elo_data['elo']
+    else:
+        # This mode doesn't have per-mode ELO or no mode specified - use global ELO
+        player = db_manager.get_player(discord_id, server_id)
+        return player['elo']
 
 def get_leaderboard_position(discord_id, server_id):
     """Get player's position on the leaderboard"""
@@ -3230,12 +3254,16 @@ async def process_winner(ctx, pug, team, admin_override=False):
     
     # Get server_id from pug or ctx
     server_id = pug.get('server_id', str(ctx.guild.id))
+    mode_name = pug.get('game_mode', 'default')
     
     # Get teams
     winner_team = pug['red_team'] if team == 'red' else pug['blue_team']
     loser_team = pug['blue_team'] if team == 'red' else pug['red_team']
     
-    # Update wins/losses
+    # Check if THIS MODE has per-mode ELO enabled
+    per_mode_elo = db_manager.is_per_mode_elo_enabled(mode_name)
+    
+    # Update wins/losses (global stats always updated)
     for uid in winner_team:
         db_manager.update_player_stats(uid, server_id, won=True)
     
@@ -3254,31 +3282,64 @@ async def process_winner(ctx, pug, team, admin_override=False):
     # Store ELO changes
     elo_changes = {}
     
-    # Update ELO for winners
-    for uid in winner_team:
-        player = db_manager.get_player(uid, server_id)
-        old_elo = player['elo']
-        if team == 'red':
-            new_elo = player['elo'] + K_FACTOR * (1 - expected_red)
-        else:
-            new_elo = player['elo'] + K_FACTOR * (1 - expected_blue)
-        db_manager.update_player_elo(uid, server_id, new_elo)
-        elo_changes[uid] = {'old': old_elo, 'new': new_elo, 'change': new_elo - old_elo}
-    
-    # Update ELO for losers
-    for uid in loser_team:
-        player = db_manager.get_player(uid, server_id)
-        old_elo = player['elo']
-        if team == 'red':
-            new_elo = player['elo'] + K_FACTOR * (0 - expected_blue)
-        else:
-            new_elo = player['elo'] + K_FACTOR * (0 - expected_red)
-        db_manager.update_player_elo(uid, server_id, new_elo)
-        elo_changes[uid] = {'old': old_elo, 'new': new_elo, 'change': new_elo - old_elo}
+    if per_mode_elo:
+        # Use per-mode ELO system
+        # Update mode-specific stats
+        for uid in winner_team:
+            db_manager.update_player_mode_stats(uid, server_id, mode_name, won=True)
+        
+        for uid in loser_team:
+            db_manager.update_player_mode_stats(uid, server_id, mode_name, won=False)
+        
+        # Update ELO for winners
+        for uid in winner_team:
+            mode_elo_data = db_manager.get_player_mode_elo(uid, server_id, mode_name)
+            old_elo = mode_elo_data['elo']
+            if team == 'red':
+                new_elo = old_elo + K_FACTOR * (1 - expected_red)
+            else:
+                new_elo = old_elo + K_FACTOR * (1 - expected_blue)
+            db_manager.update_player_mode_elo(uid, server_id, mode_name, new_elo)
+            elo_changes[uid] = {'old': old_elo, 'new': new_elo, 'change': new_elo - old_elo}
+        
+        # Update ELO for losers
+        for uid in loser_team:
+            mode_elo_data = db_manager.get_player_mode_elo(uid, server_id, mode_name)
+            old_elo = mode_elo_data['elo']
+            if team == 'red':
+                new_elo = old_elo + K_FACTOR * (0 - expected_blue)
+            else:
+                new_elo = old_elo + K_FACTOR * (0 - expected_red)
+            db_manager.update_player_mode_elo(uid, server_id, mode_name, new_elo)
+            elo_changes[uid] = {'old': old_elo, 'new': new_elo, 'change': new_elo - old_elo}
+    else:
+        # Use global ELO system
+        # Update ELO for winners
+        for uid in winner_team:
+            player = db_manager.get_player(uid, server_id)
+            old_elo = player['elo']
+            if team == 'red':
+                new_elo = player['elo'] + K_FACTOR * (1 - expected_red)
+            else:
+                new_elo = player['elo'] + K_FACTOR * (1 - expected_blue)
+            db_manager.update_player_elo(uid, server_id, new_elo)
+            elo_changes[uid] = {'old': old_elo, 'new': new_elo, 'change': new_elo - old_elo}
+        
+        # Update ELO for losers
+        for uid in loser_team:
+            player = db_manager.get_player(uid, server_id)
+            old_elo = player['elo']
+            if team == 'red':
+                new_elo = player['elo'] + K_FACTOR * (0 - expected_blue)
+            else:
+                new_elo = player['elo'] + K_FACTOR * (0 - expected_red)
+            db_manager.update_player_elo(uid, server_id, new_elo)
+            elo_changes[uid] = {'old': old_elo, 'new': new_elo, 'change': new_elo - old_elo}
     
     # Show results
+    mode_text = f" ({mode_name})" if per_mode_elo else ""
     embed = discord.Embed(
-        title=f"🏆 PUG #{pug['number']} Result",
+        title=f"🏆 PUG #{pug['number']} Result{mode_text}",
         description=f"**{'🔴 RED' if team == 'red' else '🔵 BLUE'} TEAM WINS!**" + (" ⚡ (Admin Override)" if admin_override else ""),
         color=discord.Color.red() if team == 'red' else discord.Color.blue()
     )
@@ -3287,7 +3348,12 @@ async def process_winner(ctx, pug, team, admin_override=False):
     winner_changes = []
     for uid in winner_team:
         change = elo_changes[uid]
-        player = db_manager.get_player(uid, server_id)
+        if per_mode_elo:
+            mode_elo_data = db_manager.get_player_mode_elo(uid, server_id, mode_name)
+            rank = get_elo_rank(mode_elo_data['elo'])
+        else:
+            player = db_manager.get_player(uid, server_id)
+            rank = get_elo_rank(player['elo'])
         rank = get_elo_rank(player['elo'])
         winner_changes.append(f"<@{uid}>: {change['old']:.0f} → **{change['new']:.0f}** ({change['change']:+.0f}) - {rank}")
     
@@ -3295,8 +3361,12 @@ async def process_winner(ctx, pug, team, admin_override=False):
     loser_changes = []
     for uid in loser_team:
         change = elo_changes[uid]
-        player = db_manager.get_player(uid, server_id)
-        rank = get_elo_rank(player['elo'])
+        if per_mode_elo:
+            mode_elo_data = db_manager.get_player_mode_elo(uid, server_id, mode_name)
+            rank = get_elo_rank(mode_elo_data['elo'])
+        else:
+            player = db_manager.get_player(uid, server_id)
+            rank = get_elo_rank(player['elo'])
         loser_changes.append(f"<@{uid}>: {change['old']:.0f} → **{change['new']:.0f}** ({change['change']:+.0f}) - {rank}")
     
     if team == 'red':
@@ -5205,6 +5275,241 @@ async def set_elo(ctx, player_name: str, new_elo: int):
     # Auto-update leaderboard after ELO change
     await update_leaderboard(ctx.guild.id)
 
+@bot.command(name='permodeelo')
+async def per_mode_elo_toggle(ctx, mode: str):
+    """Enable or disable per-mode ELO for a specific game mode (Admin only)
+    
+    When enabled for a mode, that mode will track separate ELO ratings for players.
+    Modes without per-mode ELO use the player's global ELO rating.
+    
+    Usage: 
+    .permodeelo competitive     (toggles per-mode ELO for competitive)
+    .permodeelo tam             (toggles per-mode ELO for TAM)
+    .permodeelo ctf             (toggles per-mode ELO for CTF)
+    """
+    if not is_admin(ctx):
+        await ctx.send("❌ You don't have permission to use this command!")
+        return
+    
+    # Resolve mode name (handle aliases)
+    mode = mode.lower()
+    mode_data = db_manager.get_game_mode(mode)
+    if not mode_data:
+        await ctx.send(f"❌ Game mode '{mode}' does not exist! Use `.modes` to see available modes.")
+        return
+    
+    mode_name = mode_data['name']
+    
+    # Check current status
+    currently_enabled = db_manager.is_per_mode_elo_enabled(mode_name)
+    
+    # Toggle
+    new_status = not currently_enabled
+    success, error = db_manager.set_per_mode_elo_for_mode(mode_name, new_status)
+    
+    if not success:
+        await ctx.send(f"❌ {error}")
+        return
+    
+    if new_status:
+        # Enabled
+        embed = discord.Embed(
+            title=f"✅ Per-Mode ELO Enabled for {mode_name}",
+            description=f"The **{mode_name}** mode will now track separate ELO ratings for players.",
+            color=discord.Color.green()
+        )
+        embed.add_field(
+            name="What This Means",
+            value=f"• Players will have separate {mode_name} ELO\n"
+                  f"• {mode_name} matches use mode-specific ELO\n"
+                  f"• Other modes still use global ELO (unless also enabled)\n"
+                  f"• Use `.setmodeelo {mode_name} @player <elo>` to set ELOs",
+            inline=False
+        )
+        embed.add_field(
+            name="Note",
+            value=f"New {mode_name} ELOs start at 1000. Set initial ELOs with `.setmodeelo`.",
+            inline=False
+        )
+    else:
+        # Disabled
+        embed = discord.Embed(
+            title=f"✅ Per-Mode ELO Disabled for {mode_name}",
+            description=f"The **{mode_name}** mode will now use global ELO ratings.",
+            color=discord.Color.blue()
+        )
+        embed.add_field(
+            name="What This Means",
+            value=f"• {mode_name} now uses players' global ELO\n"
+                  f"• Mode-specific {mode_name} ELOs are preserved but not used\n"
+                  f"• Can re-enable anytime with `.permodeelo {mode_name}`",
+            inline=False
+        )
+    
+    await ctx.send(embed=embed)
+
+@bot.command(name='permodelostatus')
+async def per_mode_elo_status(ctx):
+    """Check which modes have per-mode ELO enabled (Admin only)
+    
+    Usage: .permodelostatus
+    """
+    if not is_admin(ctx):
+        await ctx.send("❌ You don't have permission to use this command!")
+        return
+    
+    # Get all modes
+    all_modes = db_manager.get_all_game_modes()
+    
+    if not all_modes:
+        await ctx.send("❌ No game modes exist! Create modes with `.addmode`.")
+        return
+    
+    # Build status message
+    embed = discord.Embed(
+        title="📊 Per-Mode ELO Status",
+        description="Shows which modes have separate ELO tracking enabled",
+        color=discord.Color.blue()
+    )
+    
+    enabled_modes = []
+    disabled_modes = []
+    
+    for mode_name, mode_data in all_modes.items():
+        if db_manager.is_per_mode_elo_enabled(mode_name):
+            enabled_modes.append(f"✅ **{mode_name}** - Per-mode ELO active")
+        else:
+            disabled_modes.append(f"❌ **{mode_name}** - Uses global ELO")
+    
+    if enabled_modes:
+        embed.add_field(
+            name="Modes with Per-Mode ELO",
+            value="\n".join(enabled_modes),
+            inline=False
+        )
+    
+    if disabled_modes:
+        embed.add_field(
+            name="Modes using Global ELO",
+            value="\n".join(disabled_modes),
+            inline=False
+        )
+    
+    embed.set_footer(text="Use .permodeelo <mode> to toggle per-mode ELO for a specific mode")
+    
+    await ctx.send(embed=embed)
+    
+    embed = discord.Embed(
+        title="📊 Per-Mode ELO Status",
+        description=f"**Status:** {status}",
+        color=discord.Color.green() if enabled else discord.Color.red()
+    )
+    
+    if enabled:
+        embed.add_field(
+            name="Current Mode",
+            value="Each game mode tracks separate ELO ratings",
+            inline=False
+        )
+    else:
+        embed.add_field(
+            name="Current Mode",
+            value="All game modes share one global ELO rating",
+            inline=False
+        )
+    
+    await ctx.send(embed=embed)
+
+@bot.command(name='setmodeelo')
+async def set_mode_elo(ctx, mode: str, player_name: str, new_elo: int):
+    """Set a player's ELO for a specific mode (Admin only)
+    
+    Usage:
+    .setmodeelo competitive @Player 1500
+    .setmodeelo casual PlayerName 1200
+    
+    Note: Per-mode ELO must be enabled for that specific mode first using .permodeelo <mode>
+    """
+    if not is_admin(ctx):
+        await ctx.send("❌ You don't have permission to use this command!")
+        return
+    
+    # Resolve mode name (handle aliases)
+    mode = mode.lower()
+    mode_data = db_manager.get_game_mode(mode)
+    if not mode_data:
+        await ctx.send(f"❌ Game mode '{mode}' does not exist! Use `.modes` to see available modes.")
+        return
+    
+    mode_name = mode_data['name']
+    
+    # Check if THIS MODE has per-mode ELO enabled
+    if not db_manager.is_per_mode_elo_enabled(mode_name):
+        await ctx.send(f"❌ Per-mode ELO is not enabled for **{mode_name}**! Use `.permodeelo {mode_name}` to enable it first.")
+        return
+    
+    # Find player
+    discord_id = None
+    member = None
+    
+    if ctx.message.mentions:
+        member = ctx.message.mentions[0]
+        discord_id = str(member.id)
+    else:
+        discord_id = db_manager.find_player_by_name(str(ctx.guild.id), player_name)
+        
+        if discord_id:
+            try:
+                member = await ctx.guild.fetch_member(int(discord_id))
+            except:
+                member = None
+        else:
+            for guild_member in ctx.guild.members:
+                if (guild_member.display_name.lower() == player_name.lower() or 
+                    guild_member.name.lower() == player_name.lower()):
+                    member = guild_member
+                    discord_id = str(member.id)
+                    break
+            
+            if not member:
+                await ctx.send(f"❌ Could not find player '{player_name}'!")
+                return
+    
+    # Validate ELO
+    if new_elo < 0 or new_elo > 3000:
+        await ctx.send("❌ ELO must be between 0 and 3000!")
+        return
+    
+    # Get old ELO
+    old_data = db_manager.get_player_mode_elo(discord_id, str(ctx.guild.id), mode_name)
+    old_elo = old_data['elo']
+    
+    # Update mode-specific ELO
+    success, error = db_manager.set_player_mode_elo(discord_id, str(ctx.guild.id), mode_name, new_elo)
+    
+    if not success:
+        await ctx.send(f"❌ {error}")
+        return
+    
+    # Show confirmation
+    old_rank = get_elo_rank(old_elo)
+    new_rank = get_elo_rank(new_elo)
+    
+    embed = discord.Embed(
+        title=f"⚙️ Mode ELO Updated: {mode_name}",
+        description=f"Updated {mode_name} ELO for {member.mention if member else player_name}",
+        color=discord.Color.orange()
+    )
+    embed.add_field(name="Mode", value=mode_name, inline=True)
+    embed.add_field(name="Old ELO", value=f"{old_elo:.0f} ({old_rank})", inline=True)
+    embed.add_field(name="New ELO", value=f"{new_elo} ({new_rank})", inline=True)
+    
+    change = new_elo - old_elo
+    change_text = f"+{change}" if change > 0 else str(change)
+    embed.add_field(name="Change", value=change_text, inline=True)
+    
+    await ctx.send(embed=embed)
+
 @bot.command(name='setpugs')
 async def set_pugs(ctx, player_name: str, total_pugs: int):
     """Set a player's total PUG count manually (Admin only)
@@ -7090,27 +7395,33 @@ async def help_command(ctx):
         await ctx.send(f"⚠️ Error: {type(e).__name__}. Here are the commands:")
         await ctx.send(embed=admin_embed)
 
-@bot.command(name='tamproon')
+@bot.command(name='tamproon', aliases=['pugproon'])
 async def tampro_on(ctx):
-    """Enable the bot (Admin only)"""
+    """Enable the bot (Admin only)
+    
+    Aliases: .tamproon, .pugproon
+    """
     if not is_full_admin(ctx):
         await ctx.send("❌ You don't have permission to use this command!")
         return
     
     global bot_enabled
     bot_enabled = True
-    await ctx.send("✅ **TAM PRO Bot is now ONLINE!** Commands are now active.")
+    await ctx.send("✅ **PUG Pro Bot is now ONLINE!** Commands are now active.")
 
-@bot.command(name='tamprooff')
+@bot.command(name='tamprooff', aliases=['pugprooff'])
 async def tampro_off(ctx):
-    """Disable the bot (Admin only)"""
+    """Disable the bot (Admin only)
+    
+    Aliases: .tamprooff, .pugprooff
+    """
     if not is_full_admin(ctx):
         await ctx.send("❌ You don't have permission to use this command!")
         return
     
     global bot_enabled
     bot_enabled = False
-    await ctx.send("⚠️ **TAM PRO Bot is now OFFLINE!** Commands are disabled.")
+    await ctx.send("⚠️ **PUG Pro Bot is now OFFLINE!** Commands are disabled.")
 
 # Run the bot
 if __name__ == '__main__':
