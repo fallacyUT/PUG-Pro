@@ -29,25 +29,6 @@ PUG Pro Bot is a comprehensive PUG (Pick Up Game) management system for Discord.
 - **Vote System** - Democratic winner declaration with safeguards
 - **Admin Controls** - Comprehensive management tools
 
-## 📁 Package Contents
-
-```
-PUGPro-Bot-Release/
-├── README.md                    (This file)
-├── INSTALL.md                   (Installation guide)
-├── PLAYER_GUIDE.md             (Player commands and usage)
-├── ADMIN_GUIDE.md              (Admin commands and setup)
-├── COMMANDS.md                 (Complete command reference)
-├── ELO_EXPLAINED.md            (How ELO system works)
-├── TROUBLESHOOTING.md          (Common issues and solutions)
-├── CHANGELOG.md                (Version history)
-├── pug_bot.py                  (Main bot script)
-├── database.py                 (Database manager)
-├── requirements.txt            (Python dependencies)
-├── config_template.txt         (Configuration template)
-└── LICENSE.txt                 (MIT License)
-```
-
 ## 🚀 Quick Start
 
 1. **Prerequisites**
@@ -133,13 +114,6 @@ BOT_TOKEN = 'your-token-here'       # Discord bot token
 2. **[Admin Guide](ADMIN_GUIDE.md)** - Setup and configuration help
 3. **Discord** - Message **fallacy** on Discord for support
 
-## 🤝 Contributing
-
-This bot was developed by **fallacy** for competitive gaming communities. 
-
-**Found a bug?** Message **fallacy** on Discord.  
-**Feature request?** Message **fallacy** on Discord.  
-**Questions?** Message **fallacy** on Discord.
 
 ## 📜 License
 
@@ -157,4 +131,3 @@ MIT License - See LICENSE.txt for details
 
 **Ready to get started?** Head to **[INSTALL.md](INSTALL.md)** for installation instructions!
 
-**Questions?** Message **fallacy** on Discord.
