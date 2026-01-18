@@ -106,7 +106,7 @@ Admin: .permodeeloff
 
 ### Command
 ```
-Admin: .permodelostatus
+Admin: .permodeelostatus
 ```
 
 **Example Output:**
@@ -347,7 +347,7 @@ Result:
 ```
 .permodeelon                           - Enable per-mode ELO
 .permodeeloff                          - Disable per-mode ELO  
-.permodelostatus                       - Check if enabled
+.permodeelostatus                       - Check if enabled
 .setmodeelo <mode> <player> <elo>      - Set mode-specific ELO
 ```
 
@@ -419,7 +419,7 @@ Admin: .setmodeelo <mode> @player <elo>
 **Issue:** Player shows different ELO in match vs stats
 
 **Check:**
-1. Is per-mode ELO enabled? (`.permodelostatus`)
+1. Is per-mode ELO enabled? (`.permodeelostatus`)
 2. Which mode are they playing?
 3. Check mode-specific ELO (`.mystats`)
 
@@ -469,7 +469,7 @@ A: No, modes default to 1000 ELO if not set.
 - `.permodeelon` - Enable
 - `.permodeeloff` - Disable
 - `.setmodeelo` - Set mode ELO
-- `.permodelostatus` - Check status
+- `.permodeelostatus` - Check status
 
 **When to Use:**
 - Multiple modes with different skills

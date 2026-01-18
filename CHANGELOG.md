@@ -19,6 +19,12 @@ Originally developed for the UT2004 Unreal Fight Club Discord Community
 - Enables mixed competitive/casual setups (e.g., TAM has per-mode ELO, casual uses global)
 - More flexible and realistic for diverse gaming communities
 
+**ELO Prefix System:**
+- Group multiple modes under one ELO pool using prefixes
+- Perfect for game types with different team sizes (e.g., ctf2v2, ctf3v3, ctf5v5 all use 'ctf' ELO)
+- Players maintain consistent ELO across team sizes of the same game type
+- Set with `.seteloprefix <mode> <prefix>`
+
 **Queue Timeout Fix:**
 - Queue timeout now resets every time a player joins (not just first player)
 - Ensures fair treatment of recent joiners
@@ -26,8 +32,9 @@ Originally developed for the UT2004 Unreal Fight Club Discord Community
 
 ### New Commands
 - `.permodeelo <mode>` - Toggle per-mode ELO for specific mode
-- `.permodelostatus` - Show which modes have per-mode ELO enabled
+- `.permodeelostatus` - Show which modes have per-mode ELO enabled
 - `.setmodeelo <mode> <player> <elo>` - Set mode-specific ELO
+- `.seteloprefix <mode> <prefix>` - Set ELO prefix to group modes (NEW!)
 - `.pugproon` - Alias for `.tamproon` (enable bot)
 - `.pugprooff` - Alias for `.tamprooff` (disable bot)
 
@@ -37,6 +44,7 @@ Originally developed for the UT2004 Unreal Fight Club Discord Community
 
 ### Database Changes
 - Added `per_mode_elo_enabled` column to `game_modes` table
+- Added `elo_prefix` column to `game_modes` table (NEW!)
 - Automatic migration for existing databases
 - **CRITICAL FIX:** All migrations now preserve existing data (no more data loss!)
 
@@ -48,6 +56,7 @@ Originally developed for the UT2004 Unreal Fight Club Discord Community
 
 ### Documentation
 - Added DATABASE_MIGRATION_GUIDE.md - Complete migration guide ensuring data preservation
+- Added ELO_PREFIX_GUIDE.md - Complete guide to ELO prefix system (NEW!)
 - Added PER_MODE_ELO_V2_GUIDE.md - Complete guide to mode-specific per-mode ELO
 - Added QUEUE_TIMEOUT_FIX.md - Explanation of queue timeout behavior
 - Updated COMMANDS.md with v2.0 commands

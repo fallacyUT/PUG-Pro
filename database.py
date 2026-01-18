@@ -311,9 +311,18 @@ class DatabaseManager:
                 display_name TEXT NOT NULL,
                 team_size INTEGER NOT NULL,
                 description TEXT,
-                per_mode_elo_enabled INTEGER DEFAULT 0
+                per_mode_elo_enabled INTEGER DEFAULT 0,
+                elo_prefix TEXT
             )
         ''')
+        
+        # Migration: Add elo_prefix column if it doesn't exist
+        try:
+            cursor.execute("SELECT elo_prefix FROM game_modes LIMIT 1")
+        except:
+            cursor.execute("ALTER TABLE game_modes ADD COLUMN elo_prefix TEXT")
+            conn.commit()
+            print("✅ Database migration: Added 'elo_prefix' column to game_modes table")
         
         # Migration: Add per_mode_elo_enabled column if it doesn't exist
         try:
@@ -1215,6 +1224,70 @@ class DatabaseManager:
         conn.commit()
         conn.close()
         return True, None
+    
+    def set_mode_elo_prefix(self, mode_name: str, elo_prefix: str) -> tuple[bool, str]:
+        """Set the ELO prefix for a mode (for grouping modes with same prefix)
+        
+        Args:
+            mode_name: The mode to configure
+            elo_prefix: The prefix (e.g., 'ctf' for ctf2v2, ctf3v3, ctf5v5)
+            
+        Returns:
+            tuple: (success: bool, error_message: str or None)
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        # Check if mode exists
+        cursor.execute('SELECT mode_name FROM game_modes WHERE mode_name = ?', (mode_name,))
+        if not cursor.fetchone():
+            conn.close()
+            return False, f"Mode '{mode_name}' does not exist!"
+        
+        # Update elo_prefix
+        cursor.execute('''
+            UPDATE game_modes SET elo_prefix = ? WHERE mode_name = ?
+        ''', (elo_prefix.lower() if elo_prefix else None, mode_name))
+        
+        conn.commit()
+        conn.close()
+        return True, None
+    
+    def get_mode_elo_prefix(self, mode_name: str) -> Optional[str]:
+        """Get the ELO prefix for a mode
+        
+        Args:
+            mode_name: The mode name
+            
+        Returns:
+            str or None: The ELO prefix if set, None otherwise
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT elo_prefix FROM game_modes WHERE mode_name = ?', (mode_name,))
+        row = cursor.fetchone()
+        
+        conn.close()
+        return row[0] if row and row[0] else None
+    
+    def get_effective_mode_for_elo(self, mode_name: str) -> str:
+        """Get the effective mode name for ELO purposes
+        
+        If the mode has an elo_prefix, returns the prefix.
+        Otherwise returns the mode_name.
+        
+        This allows modes like ctf2v2, ctf3v3, ctf5v5 to share ELO
+        if they all have elo_prefix='ctf'.
+        
+        Args:
+            mode_name: The actual mode name
+            
+        Returns:
+            str: The effective mode name for ELO tracking
+        """
+        elo_prefix = self.get_mode_elo_prefix(mode_name)
+        return elo_prefix if elo_prefix else mode_name
     
     def get_modes_with_per_mode_elo(self) -> list:
         """Get list of modes that have per-mode ELO enabled"""

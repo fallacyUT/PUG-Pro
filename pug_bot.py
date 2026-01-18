@@ -1384,6 +1384,9 @@ def get_elo_rank(elo):
 def get_player_elo(discord_id, server_id, mode_name=None):
     """Get player's ELO - mode-specific if that mode has per-mode ELO enabled, else global
     
+    If the mode has an elo_prefix set, uses that prefix for ELO lookup.
+    This allows modes like ctf2v2, ctf3v3, ctf5v5 to share the same ELO pool.
+    
     Args:
         discord_id: Player's Discord ID
         server_id: Server ID
@@ -1393,8 +1396,10 @@ def get_player_elo(discord_id, server_id, mode_name=None):
         float: Player's ELO rating (mode-specific or global)
     """
     if mode_name and db_manager.is_per_mode_elo_enabled(mode_name):
-        # This mode has per-mode ELO enabled - use mode-specific ELO
-        mode_elo_data = db_manager.get_player_mode_elo(discord_id, server_id, mode_name)
+        # This mode has per-mode ELO enabled
+        # Get the effective mode name (uses elo_prefix if set)
+        effective_mode = db_manager.get_effective_mode_for_elo(mode_name)
+        mode_elo_data = db_manager.get_player_mode_elo(discord_id, server_id, effective_mode)
         return mode_elo_data['elo']
     else:
         # This mode doesn't have per-mode ELO or no mode specified - use global ELO
@@ -3284,33 +3289,36 @@ async def process_winner(ctx, pug, team, admin_override=False):
     
     if per_mode_elo:
         # Use per-mode ELO system
-        # Update mode-specific stats
+        # Get effective mode name (uses elo_prefix if set)
+        effective_mode = db_manager.get_effective_mode_for_elo(mode_name)
+        
+        # Update mode-specific stats (use effective mode for consistency)
         for uid in winner_team:
-            db_manager.update_player_mode_stats(uid, server_id, mode_name, won=True)
+            db_manager.update_player_mode_stats(uid, server_id, effective_mode, won=True)
         
         for uid in loser_team:
-            db_manager.update_player_mode_stats(uid, server_id, mode_name, won=False)
+            db_manager.update_player_mode_stats(uid, server_id, effective_mode, won=False)
         
         # Update ELO for winners
         for uid in winner_team:
-            mode_elo_data = db_manager.get_player_mode_elo(uid, server_id, mode_name)
+            mode_elo_data = db_manager.get_player_mode_elo(uid, server_id, effective_mode)
             old_elo = mode_elo_data['elo']
             if team == 'red':
                 new_elo = old_elo + K_FACTOR * (1 - expected_red)
             else:
                 new_elo = old_elo + K_FACTOR * (1 - expected_blue)
-            db_manager.update_player_mode_elo(uid, server_id, mode_name, new_elo)
+            db_manager.update_player_mode_elo(uid, server_id, effective_mode, new_elo)
             elo_changes[uid] = {'old': old_elo, 'new': new_elo, 'change': new_elo - old_elo}
         
         # Update ELO for losers
         for uid in loser_team:
-            mode_elo_data = db_manager.get_player_mode_elo(uid, server_id, mode_name)
+            mode_elo_data = db_manager.get_player_mode_elo(uid, server_id, effective_mode)
             old_elo = mode_elo_data['elo']
             if team == 'red':
                 new_elo = old_elo + K_FACTOR * (0 - expected_blue)
             else:
                 new_elo = old_elo + K_FACTOR * (0 - expected_red)
-            db_manager.update_player_mode_elo(uid, server_id, mode_name, new_elo)
+            db_manager.update_player_mode_elo(uid, server_id, effective_mode, new_elo)
             elo_changes[uid] = {'old': old_elo, 'new': new_elo, 'change': new_elo - old_elo}
     else:
         # Use global ELO system
@@ -5370,11 +5378,11 @@ async def per_mode_elo_toggle(ctx, mode: str):
     
     await ctx.send(embed=embed)
 
-@bot.command(name='permodelostatus')
+@bot.command(name='permodeelostatus')
 async def per_mode_elo_status(ctx):
     """Check which modes have per-mode ELO enabled (Admin only)
     
-    Usage: .permodelostatus
+    Usage: .permodeelostatus
     """
     if not is_admin(ctx):
         await ctx.send("❌ You don't have permission to use this command!")
@@ -5398,8 +5406,11 @@ async def per_mode_elo_status(ctx):
     disabled_modes = []
     
     for mode_name, mode_data in all_modes.items():
+        elo_prefix = db_manager.get_mode_elo_prefix(mode_name)
+        prefix_text = f" [prefix: {elo_prefix}]" if elo_prefix else ""
+        
         if db_manager.is_per_mode_elo_enabled(mode_name):
-            enabled_modes.append(f"✅ **{mode_name}** - Per-mode ELO active")
+            enabled_modes.append(f"✅ **{mode_name}**{prefix_text} - Per-mode ELO active")
         else:
             disabled_modes.append(f"❌ **{mode_name}** - Uses global ELO")
     
@@ -5420,23 +5431,74 @@ async def per_mode_elo_status(ctx):
     embed.set_footer(text="Use .permodeelo <mode> to toggle per-mode ELO for a specific mode")
     
     await ctx.send(embed=embed)
+
+@bot.command(name='seteloprefix')
+async def set_elo_prefix(ctx, mode: str, prefix: str = None):
+    """Set ELO prefix for a mode to group modes with same ELO pool (Admin only)
     
-    embed = discord.Embed(
-        title="📊 Per-Mode ELO Status",
-        description=f"**Status:** {status}",
-        color=discord.Color.green() if enabled else discord.Color.red()
-    )
+    Usage:
+    .seteloprefix ctf2v2 ctf      - ctf2v2 shares ELO with other ctf modes
+    .seteloprefix ctf3v3 ctf      - ctf3v3 shares ELO with other ctf modes
+    .seteloprefix ctf5v5 ctf      - All ctf modes now share same ELO
+    .seteloprefix tam2v2 tam      - Group all tam modes
+    .seteloprefix ctf2v2 none     - Remove prefix (mode uses own name)
     
-    if enabled:
+    This allows different team sizes of the same game type to share ELO.
+    """
+    if not is_admin(ctx):
+        await ctx.send("❌ You don't have permission to use this command!")
+        return
+    
+    # Resolve mode name (handle aliases)
+    mode = mode.lower()
+    mode_data = db_manager.get_game_mode(mode)
+    if not mode_data:
+        await ctx.send(f"❌ Game mode '{mode}' does not exist! Use `.modes` to see available modes.")
+        return
+    
+    mode_name = mode  # Use the resolved mode name
+    
+    # Handle 'none' to remove prefix
+    if prefix and prefix.lower() == 'none':
+        prefix = None
+    
+    # Set the prefix
+    success, error = db_manager.set_mode_elo_prefix(mode_name, prefix)
+    
+    if not success:
+        await ctx.send(f"❌ {error}")
+        return
+    
+    # Show result
+    if prefix:
+        embed = discord.Embed(
+            title=f"✅ ELO Prefix Set: {mode_name}",
+            description=f"Mode **{mode_name}** will now use ELO prefix: **{prefix}**",
+            color=discord.Color.green()
+        )
         embed.add_field(
-            name="Current Mode",
-            value="Each game mode tracks separate ELO ratings",
+            name="What This Means",
+            value=f"• {mode_name} shares ELO with other modes using prefix '{prefix}'\n"
+                  f"• Example: If ctf2v2, ctf3v3, ctf5v5 all use prefix 'ctf', they share one ELO pool\n"
+                  f"• Player's ELO for '{prefix}' will be used in {mode_name} matches",
+            inline=False
+        )
+        embed.add_field(
+            name="Note",
+            value=f"Per-mode ELO must be enabled for {mode_name} to use this prefix.\n"
+                  f"Use `.permodeelo {mode_name}` if not already enabled.",
             inline=False
         )
     else:
+        embed = discord.Embed(
+            title=f"✅ ELO Prefix Removed: {mode_name}",
+            description=f"Mode **{mode_name}** will now use its own name for ELO",
+            color=discord.Color.blue()
+        )
         embed.add_field(
-            name="Current Mode",
-            value="All game modes share one global ELO rating",
+            name="What This Means",
+            value=f"• {mode_name} no longer shares ELO with other modes\n"
+                  f"• {mode_name} will have its own separate ELO pool",
             inline=False
         )
     
