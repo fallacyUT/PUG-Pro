@@ -4,7 +4,7 @@ A customizable version of the TAM Pro Bot
 Originally developed for the UT2004 Unreal Fight Club Discord Community
 
 
-**Version:** 2.0  
+**Version:** 2.1.1  
 **Developed by:** fallacy  
 **For:** Competitive Gaming Communities  
 
