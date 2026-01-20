@@ -312,8 +312,7 @@ class DatabaseManager:
                 team_size INTEGER NOT NULL,
                 description TEXT,
                 per_mode_elo_enabled INTEGER DEFAULT 0,
-                elo_prefix TEXT,
-                tiebreaker_enabled INTEGER DEFAULT 1
+                elo_prefix TEXT
             )
         ''')
         
@@ -324,14 +323,6 @@ class DatabaseManager:
             cursor.execute("ALTER TABLE game_modes ADD COLUMN elo_prefix TEXT")
             conn.commit()
             print("✅ Database migration: Added 'elo_prefix' column to game_modes table")
-        
-        # Migration: Add tiebreaker_enabled column if it doesn't exist
-        try:
-            cursor.execute("SELECT tiebreaker_enabled FROM game_modes LIMIT 1")
-        except:
-            cursor.execute("ALTER TABLE game_modes ADD COLUMN tiebreaker_enabled INTEGER DEFAULT 1")
-            conn.commit()
-            print("✅ Database migration: Added 'tiebreaker_enabled' column to game_modes table")
         
         # Migration: Add per_mode_elo_enabled column if it doesn't exist
         try:
@@ -1641,32 +1632,3 @@ class DatabaseManager:
         
         conn.commit()
         conn.close()
-    
-    def set_tiebreaker_enabled(self, mode_name: str, enabled: bool) -> tuple:
-        """Enable or disable tiebreaker for a specific mode"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute('SELECT mode_name FROM game_modes WHERE mode_name = ?', (mode_name,))
-        if not cursor.fetchone():
-            conn.close()
-            return False, f"Mode '{mode_name}' does not exist!"
-        
-        cursor.execute('''
-            UPDATE game_modes SET tiebreaker_enabled = ? WHERE mode_name = ?
-        ''', (1 if enabled else 0, mode_name))
-        
-        conn.commit()
-        conn.close()
-        return True, None
-    
-    def is_tiebreaker_enabled(self, mode_name: str) -> bool:
-        """Check if tiebreaker is enabled for a mode"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute('SELECT tiebreaker_enabled FROM game_modes WHERE mode_name = ?', (mode_name,))
-        row = cursor.fetchone()
-        
-        conn.close()
-        return row[0] == 1 if row and row[0] is not None else True  # Default to enabled

@@ -589,7 +589,7 @@ class PUGQueue:
             await self.channel.send(
                 f"❌ {', '.join(mentions)} removed from pug for not readying up in time."
             )
-            self.state = 'waiting'
+            # Don't reset state yet - check if queue will refill first
             self.ready_responses = {}
             
             # Try to promote from waiting queue to fill empty spots
@@ -631,7 +631,11 @@ class PUGQueue:
             
             # Check if queue filled back up after promotions
             if len(self.queue) == self.team_size:
+                # Queue is full again, start new ready check
                 await self.check_queue_full()
+            else:
+                # Queue didn't fill, return to waiting state
+                self.state = 'waiting'
         else:
             # Save initial queue order NOW before any picks happen
             self.initial_queue = self.queue.copy()
