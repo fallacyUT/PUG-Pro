@@ -1154,6 +1154,11 @@ class PUGQueue:
                         self.selected_tiebreaker_mode = effective_mode  # Store mode for cooldown tracking
                         
                         embed.add_field(name="Tiebreaker", value=tiebreaker, inline=False)
+                        print(f"[TIEBREAKER] Selected {tiebreaker} for {self.game_mode_name} (mode: {effective_mode})")
+                    else:
+                        print(f"[TIEBREAKER] No maps configured for {self.game_mode_name} (mode: {effective_mode}) - tiebreaker skipped")
+                else:
+                    print(f"[TIEBREAKER] Tiebreaker disabled for {self.game_mode_name} - skipped")
         else:
             # Show available players only during picking
             available = self.get_available_players()
@@ -2502,13 +2507,24 @@ async def add_map_cmd(ctx, mode_prefix: str, *, maps: str):
     .addmap ctf CTF-Face, CTF-LavaGiant, CTF-Orbital  Add multiple maps (comma-separated)
     .addmap tam DM-Rankin, DM-Deck17, DM-Morpheus     Add multiple maps
     
-    The mode_prefix should match the elo_prefix if set, or the mode name.
+    The mode_prefix should be either:
+    - A mode name (e.g., 'duel') if the mode has no ELO prefix set
+    - An ELO prefix (e.g., 'ctf') that groups multiple modes together
+    
+    Use .seteloprefix <mode> <prefix> first to set up prefix grouping.
     """
     if not is_admin(ctx):
         await ctx.send("❌ You don't have permission to use this command!")
         return
     
     server_id = str(ctx.guild.id)
+    
+    # Validate that the mode/prefix exists and get the effective prefix
+    is_valid, error, effective_prefix = db_manager.validate_mode_for_maps(mode_prefix)
+    
+    if not is_valid:
+        await ctx.send(f"❌ {error}\n\n**How to fix:**\n• Create a mode with `.addmode <name> <size>`\n• Set ELO prefix with `.seteloprefix <mode> <prefix>`\n• Then add maps with `.addmap <prefix> <maps>`")
+        return
     
     # Split by comma and clean up whitespace
     map_list = [m.strip() for m in maps.split(',')]
@@ -2520,7 +2536,7 @@ async def add_map_cmd(ctx, mode_prefix: str, *, maps: str):
         if not map_name:  # Skip empty strings
             continue
             
-        success, error = db_manager.add_map(server_id, mode_prefix, map_name)
+        success, error = db_manager.add_map(server_id, effective_prefix, map_name)
         
         if success:
             added_maps.append(map_name)
@@ -2529,10 +2545,10 @@ async def add_map_cmd(ctx, mode_prefix: str, *, maps: str):
     
     # Build response
     if added_maps:
-        total_maps = db_manager.get_maps_for_mode(server_id, mode_prefix)
-        response = f"✅ Added **{len(added_maps)}** map(s) to **{mode_prefix}** pool:\n"
+        total_maps = db_manager.get_maps_for_mode(server_id, effective_prefix)
+        response = f"✅ Added **{len(added_maps)}** map(s) to **{effective_prefix}** pool:\n"
         response += "• " + "\n• ".join(added_maps)
-        response += f"\n\nTotal maps in **{mode_prefix}**: {len(total_maps)}"
+        response += f"\n\nTotal maps in **{effective_prefix}**: {len(total_maps)}"
         
         if failed_maps:
             response += f"\n\n⚠️ Failed to add {len(failed_maps)} map(s):\n"
@@ -2550,21 +2566,77 @@ async def remove_map_cmd(ctx, mode_prefix: str, *, map_name: str):
     """Remove a map from a mode's map pool (Admin only)
     
     Usage:
-    .removemap ctf DM-Deck16
+    .removemap ctf CTF-Deck16
     .removemap tam DM-Rankin
+    
+    Map names are case-insensitive.
     """
     if not is_admin(ctx):
         await ctx.send("❌ You don't have permission to use this command!")
         return
     
     server_id = str(ctx.guild.id)
-    success, error = db_manager.remove_map(server_id, mode_prefix, map_name)
+    
+    # Validate that the mode/prefix exists
+    is_valid, error, effective_prefix = db_manager.validate_mode_for_maps(mode_prefix)
+    
+    if not is_valid:
+        await ctx.send(f"❌ {error}")
+        return
+    
+    success, error = db_manager.remove_map(server_id, effective_prefix, map_name)
     
     if success:
-        maps = db_manager.get_maps_for_mode(server_id, mode_prefix)
-        await ctx.send(f"✅ Removed **{map_name}** from **{mode_prefix}** map pool! (Total: {len(maps)} maps)")
+        maps = db_manager.get_maps_for_mode(server_id, effective_prefix)
+        await ctx.send(f"✅ Removed **{map_name}** from **{effective_prefix}** map pool! (Total: {len(maps)} maps)")
     else:
+        # Show current maps to help user
+        current_maps = db_manager.get_maps_for_mode(server_id, effective_prefix)
+        if current_maps:
+            map_list = ", ".join(current_maps[:5])
+            if len(current_maps) > 5:
+                map_list += f", ... ({len(current_maps)} total)"
+            await ctx.send(f"❌ {error}\n\n**Current maps in {effective_prefix}:** {map_list}\n\nUse `.maps {effective_prefix}` to see all maps.")
+        else:
+            await ctx.send(f"❌ {error}\n\n**{effective_prefix}** has no maps configured.")
+
+@bot.command(name='removeallmaps')
+async def remove_all_maps_cmd(ctx, mode_prefix: str):
+    """Remove ALL maps from a mode's map pool (Admin only)
+    
+    Usage:
+    .removeallmaps ctf
+    .removeallmaps tam
+    
+    ⚠️ WARNING: This will delete ALL maps for the specified mode/prefix!
+    """
+    if not is_admin(ctx):
+        await ctx.send("❌ You don't have permission to use this command!")
+        return
+    
+    server_id = str(ctx.guild.id)
+    
+    # Validate that the mode/prefix exists
+    is_valid, error, effective_prefix = db_manager.validate_mode_for_maps(mode_prefix)
+    
+    if not is_valid:
         await ctx.send(f"❌ {error}")
+        return
+    
+    # Get current maps before deletion
+    current_maps = db_manager.get_maps_for_mode(server_id, effective_prefix)
+    
+    if not current_maps:
+        await ctx.send(f"❌ **{effective_prefix}** has no maps to remove!")
+        return
+    
+    # Delete all maps for this prefix
+    success, count = db_manager.remove_all_maps(server_id, effective_prefix)
+    
+    if success:
+        await ctx.send(f"✅ Removed **{count}** map(s) from **{effective_prefix}** map pool!\n\n**Deleted maps:**\n• " + "\n• ".join(current_maps))
+    else:
+        await ctx.send(f"❌ Failed to remove maps from **{effective_prefix}**!")
 
 @bot.command(name='maps', aliases=['maplist'])
 async def list_maps(ctx, mode_prefix: str = None):

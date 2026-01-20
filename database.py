@@ -312,7 +312,8 @@ class DatabaseManager:
                 team_size INTEGER NOT NULL,
                 description TEXT,
                 per_mode_elo_enabled INTEGER DEFAULT 0,
-                elo_prefix TEXT
+                elo_prefix TEXT,
+                tiebreaker_enabled INTEGER DEFAULT 1
             )
         ''')
         
@@ -331,6 +332,14 @@ class DatabaseManager:
             cursor.execute("ALTER TABLE game_modes ADD COLUMN per_mode_elo_enabled INTEGER DEFAULT 0")
             conn.commit()
             print("✅ Database migration: Added 'per_mode_elo_enabled' column to game_modes table")
+        
+        # Migration: Add tiebreaker_enabled column if it doesn't exist
+        try:
+            cursor.execute("SELECT tiebreaker_enabled FROM game_modes LIMIT 1")
+        except:
+            cursor.execute("ALTER TABLE game_modes ADD COLUMN tiebreaker_enabled INTEGER DEFAULT 1")
+            conn.commit()
+            print("✅ Database migration: Added 'tiebreaker_enabled' column to game_modes table")
         
         # Mode Aliases table
         cursor.execute('''
@@ -1532,9 +1541,10 @@ class DatabaseManager:
         conn = self.get_connection()
         cursor = conn.cursor()
         
+        # Case-insensitive search for map
         cursor.execute('''
             DELETE FROM maps
-            WHERE server_id = ? AND mode_prefix = ? AND map_name = ?
+            WHERE server_id = ? AND mode_prefix = ? AND LOWER(map_name) = LOWER(?)
         ''', (server_id, mode_prefix.lower(), map_name))
         
         deleted = cursor.rowcount > 0
@@ -1632,3 +1642,86 @@ class DatabaseManager:
         
         conn.commit()
         conn.close()
+    
+    def set_tiebreaker_enabled(self, mode_name: str, enabled: bool) -> tuple:
+        """Enable or disable tiebreaker for a specific mode"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT mode_name FROM game_modes WHERE mode_name = ?', (mode_name,))
+        if not cursor.fetchone():
+            conn.close()
+            return False, f"Mode '{mode_name}' does not exist!"
+        
+        cursor.execute('''
+            UPDATE game_modes SET tiebreaker_enabled = ? WHERE mode_name = ?
+        ''', (1 if enabled else 0, mode_name))
+        
+        conn.commit()
+        conn.close()
+        return True, None
+    
+    def is_tiebreaker_enabled(self, mode_name: str) -> bool:
+        """Check if tiebreaker is enabled for a mode"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT tiebreaker_enabled FROM game_modes WHERE mode_name = ?', (mode_name,))
+        row = cursor.fetchone()
+        
+        conn.close()
+        return row[0] == 1 if row and row[0] is not None else True  # Default to enabled
+    
+    def validate_mode_for_maps(self, mode_prefix: str) -> tuple:
+        """Validate that a mode/prefix exists and is properly configured for maps
+        
+        Returns:
+            tuple: (is_valid: bool, error_message: str or None, effective_prefix: str or None)
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        # Check if this is an actual mode name
+        cursor.execute('SELECT mode_name, elo_prefix FROM game_modes WHERE mode_name = ?', (mode_prefix,))
+        mode_row = cursor.fetchone()
+        
+        if mode_row:
+            # It's a mode name - check if it has a prefix or use the mode name itself
+            mode_name, elo_prefix = mode_row
+            effective_prefix = elo_prefix if elo_prefix else mode_name
+            conn.close()
+            return True, None, effective_prefix
+        
+        # Not a direct mode match - check if it's used as a prefix by any modes
+        cursor.execute('SELECT COUNT(*) FROM game_modes WHERE elo_prefix = ?', (mode_prefix,))
+        count = cursor.fetchone()[0]
+        
+        conn.close()
+        
+        if count > 0:
+            # It's a valid prefix used by modes
+            return True, None, mode_prefix
+        else:
+            # Not a mode and not a prefix
+            return False, f"'{mode_prefix}' is not a valid mode or prefix. Use a mode name or set an ELO prefix with .seteloprefix first.", None
+    
+    def remove_all_maps(self, server_id: str, mode_prefix: str) -> tuple:
+        """Remove all maps from a mode's map pool
+        
+        Returns:
+            tuple: (success: bool, count: int)
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            DELETE FROM maps
+            WHERE server_id = ? AND mode_prefix = ?
+        ''', (server_id, mode_prefix.lower()))
+        
+        count = cursor.rowcount
+        
+        conn.commit()
+        conn.close()
+        
+        return True, count

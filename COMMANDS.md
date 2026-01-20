@@ -112,6 +112,31 @@ Originally developed for the UT2004 Unreal Fight Club Discord Community
 .setmapcooldown <count>      - Set map cooldown period
 ```
 
+### Map Pool Management (v2.1)
+```
+.addmap <prefix> <maps>          - Add map(s) to mode's pool (comma-separated)
+                                   Example: .addmap ctf CTF-Face, CTF-LavaGiant
+.removemap <prefix> <map>        - Remove map from mode's pool
+.removeallmaps <prefix>          - Remove ALL maps from mode's pool
+.maps                            - Show all maps grouped by mode
+.maps <prefix>                   - Show maps for specific mode with cooldowns
+```
+
+### Tiebreaker Management (v2.1)
+```
+.tiebreaker <mode> on            - Enable tiebreaker for mode
+.tiebreaker <mode> off           - Disable tiebreaker for mode
+.tiebreaker <mode>               - Check tiebreaker status
+```
+
+### ELO Prefix System (v2.0)
+```
+.seteloprefix <mode> <prefix>    - Set ELO prefix to group modes
+                                   Example: .seteloprefix ctf2v2 ctf
+.seteloprefix <mode> none        - Remove ELO prefix from mode
+.permodeelostatus                - Shows which modes have per-mode ELO and prefixes
+```
+
 ### Data Management
 ```
 .exportstats                 - Export all player data to CSV
