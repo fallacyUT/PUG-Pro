@@ -118,6 +118,9 @@ Originally developed for the UT2004 Unreal Fight Club Discord Community
                                    Example: .addmap ctf CTF-Face, CTF-LavaGiant
 .removemap <prefix> <map>        - Remove map from mode's pool
 .removeallmaps <prefix>          - Remove ALL maps from mode's pool
+.deletemapprefix <prefix>        - Delete accidental/invalid map prefix
+.confirmdeletemapprefix <prefix> - Confirm deletion of map prefix
+.listmapprefixes                 - List all map prefixes (valid and accidental)
 .maps                            - Show all maps grouped by mode
 .maps <prefix>                   - Show maps for specific mode with cooldowns
 ```

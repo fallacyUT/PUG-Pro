@@ -1242,6 +1242,9 @@ class PUGQueue:
             # Store the PUG ID for deadpug functionality
             self.last_pug_id = pug_number
             
+            # Debug: Log before reset
+            print(f"[DEBUG] Before reset: queue={len(self.queue)}, waiting={len(self.waiting_queue)}, state={self.state}")
+            
             # Remove all players in this PUG from other queues in same channel
             all_players = self.red_team + self.blue_team
             await self.remove_players_from_other_queues(all_players)
@@ -1251,6 +1254,9 @@ class PUGQueue:
             waiting_count = len(self.waiting_queue)
             
             self.hard_reset()  # Use hard_reset to completely clear queue (moves waiting to main)
+            
+            # Debug: Log after reset
+            print(f"[DEBUG] After reset: queue={len(self.queue)}, waiting={len(self.waiting_queue)}, state={self.state}")
             
             # Notify if waiting queue players were promoted
             if had_waiting_players:
@@ -2267,8 +2273,18 @@ async def list_queue(ctx, game_mode: str = None):
         embed = discord.Embed(title="Active Pugs", color=discord.Color.blue())
         
         for queue_key, queue in channel_queues.items():
-            if queue.queue:
+            if queue.queue or queue.state != 'waiting':  # Show if has players OR not in waiting state
                 mode_data = db_manager.get_game_mode(queue.game_mode_name)
+                
+                # Add state indicator
+                state_indicator = ""
+                if queue.state == 'ready_check':
+                    state_indicator = " [READY CHECK]"
+                elif queue.state == 'selecting_captains':
+                    state_indicator = " [SELECTING CAPTAINS]"
+                elif queue.state == 'picking':
+                    state_indicator = " [PICKING TEAMS]"
+                
                 players = []
                 for uid in queue.queue:
                     # Use get_player_elo to check if mode has per-mode ELO enabled
@@ -2278,7 +2294,7 @@ async def list_queue(ctx, game_mode: str = None):
                     name = member.display_name if member else f"Player_{uid}"
                     players.append(f"{name} - {elo:.0f} ({rank})")
                 
-                field_name = f"{mode_data['name']} ({len(queue.queue)}/{queue.team_size})"
+                field_name = f"{mode_data['name']} ({len(queue.queue)}/{queue.team_size}){state_indicator}"
                 if queue.waiting_queue:
                     field_name += f" + {len(queue.waiting_queue)} waiting"
                 
@@ -2637,6 +2653,143 @@ async def remove_all_maps_cmd(ctx, mode_prefix: str):
         await ctx.send(f"✅ Removed **{count}** map(s) from **{effective_prefix}** map pool!\n\n**Deleted maps:**\n• " + "\n• ".join(current_maps))
     else:
         await ctx.send(f"❌ Failed to remove maps from **{effective_prefix}**!")
+
+@bot.command(name='deletemapprefix')
+async def delete_map_prefix(ctx, prefix: str):
+    """Delete an invalid/accidental map prefix from the database (Admin only)
+    
+    This is for fixing mistakes where a map name was accidentally used as a prefix.
+    Case-insensitive - converts to lowercase automatically.
+    
+    Usage:
+    .deletemapprefix ABSOLUTE-TE
+    .deletemapprefix absolute-te    (same result)
+    
+    ⚠️ WARNING: This will delete ALL maps associated with this prefix!
+    Use this only to clean up accidental prefix entries.
+    """
+    if not is_admin(ctx):
+        await ctx.send("❌ You don't have permission to use this command!")
+        return
+    
+    server_id = str(ctx.guild.id)
+    
+    # Get maps for this prefix (get_maps_for_mode already lowercases the prefix)
+    current_maps = db_manager.get_maps_for_mode(server_id, prefix)
+    
+    if not current_maps:
+        await ctx.send(f"❌ No maps found for prefix **{prefix.lower()}**!\n\nTip: Use `.listmapprefixes` to see all existing prefixes.")
+        return
+    
+    # Show what will be deleted and ask for confirmation
+    map_list = "\n• ".join(current_maps)
+    
+    await ctx.send(
+        f"⚠️ **WARNING: About to delete map prefix '{prefix.lower()}'**\n\n"
+        f"**{len(current_maps)} map(s) will be deleted:**\n• {map_list}\n\n"
+        f"**To confirm deletion, type:** `.confirmdeletemapprefix {prefix}`"
+    )
+
+@bot.command(name='confirmdeletemapprefix')
+async def confirm_delete_map_prefix(ctx, prefix: str):
+    """Confirm deletion of an accidental map prefix (Admin only)
+    
+    This is the confirmation step for .deletemapprefix
+    Case-insensitive - converts to lowercase automatically.
+    """
+    if not is_admin(ctx):
+        await ctx.send("❌ You don't have permission to use this command!")
+        return
+    
+    server_id = str(ctx.guild.id)
+    
+    # Get current maps (get_maps_for_mode already lowercases the prefix)
+    current_maps = db_manager.get_maps_for_mode(server_id, prefix)
+    
+    if not current_maps:
+        await ctx.send(f"❌ No maps found for prefix **{prefix.lower()}**!")
+        return
+    
+    # Delete all maps for this prefix (remove_all_maps already lowercases the prefix)
+    success, count = db_manager.remove_all_maps(server_id, prefix)
+    
+    if success:
+        await ctx.send(
+            f"✅ **Deleted map prefix '{prefix.lower()}'**\n\n"
+            f"**Removed {count} map(s):**\n• " + "\n• ".join(current_maps) + "\n\n"
+            f"The prefix **{prefix.lower()}** has been removed from your server."
+        )
+    else:
+        await ctx.send(f"❌ Failed to delete prefix **{prefix.lower()}**!")
+
+@bot.command(name='listmapprefixes')
+async def list_map_prefixes(ctx):
+    """List all map prefixes in the database (Admin only)
+    
+    Shows all prefixes that have maps, including accidental ones.
+    Helps identify which prefixes are valid vs accidental.
+    
+    Usage:
+    .listmapprefixes
+    """
+    if not is_admin(ctx):
+        await ctx.send("❌ You don't have permission to use this command!")
+        return
+    
+    server_id = str(ctx.guild.id)
+    
+    # Get all prefixes
+    all_prefixes = db_manager.find_map_prefixes(server_id)
+    
+    if not all_prefixes:
+        await ctx.send("📋 No map prefixes found in database!")
+        return
+    
+    # Build response
+    embed = discord.Embed(
+        title="🗺️ All Map Prefixes in Database",
+        description=f"Found {len(all_prefixes)} prefix(es) with maps",
+        color=discord.Color.blue()
+    )
+    
+    # Get all valid modes for comparison
+    all_modes = db_manager.get_all_game_modes()
+    valid_prefixes = set()
+    
+    for mode_name, mode_data in all_modes.items():
+        # Add mode name as valid
+        valid_prefixes.add(mode_name.lower())
+        # Add elo_prefix if set
+        elo_prefix = db_manager.get_mode_elo_prefix(mode_name)
+        if elo_prefix:
+            valid_prefixes.add(elo_prefix.lower())
+    
+    # Separate valid and invalid prefixes
+    valid_list = []
+    invalid_list = []
+    
+    for prefix, count in all_prefixes:
+        prefix_info = f"**{prefix}** ({count} maps)"
+        if prefix.lower() in valid_prefixes:
+            valid_list.append(f"✅ {prefix_info}")
+        else:
+            invalid_list.append(f"⚠️ {prefix_info} - **ACCIDENTAL**")
+    
+    if valid_list:
+        embed.add_field(
+            name="Valid Prefixes",
+            value="\n".join(valid_list),
+            inline=False
+        )
+    
+    if invalid_list:
+        embed.add_field(
+            name="⚠️ Invalid/Accidental Prefixes",
+            value="\n".join(invalid_list) + "\n\nUse `.deletemapprefix <prefix>` to remove",
+            inline=False
+        )
+    
+    await ctx.send(embed=embed)
 
 @bot.command(name='maps', aliases=['maplist'])
 async def list_maps(ctx, mode_prefix: str = None):

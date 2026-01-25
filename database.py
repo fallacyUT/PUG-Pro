@@ -1725,3 +1725,80 @@ class DatabaseManager:
         conn.close()
         
         return True, count
+    
+    def get_maps_for_prefix_exact(self, server_id: str, mode_prefix: str) -> list:
+        """Get all maps for a specific prefix WITHOUT lowercasing (for cleanup)
+        
+        This is used for cleaning up accidental prefixes that may have odd casing.
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        # Case-insensitive search
+        cursor.execute('''
+            SELECT map_name FROM maps
+            WHERE server_id = ? AND LOWER(mode_prefix) = LOWER(?)
+            ORDER BY map_name
+        ''', (server_id, mode_prefix))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        return [row[0] for row in rows]
+    
+    def remove_all_maps_exact(self, server_id: str, mode_prefix: str) -> tuple:
+        """Remove all maps from a prefix WITHOUT lowercasing (for cleanup)
+        
+        Returns:
+            tuple: (success: bool, count: int)
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        # Case-insensitive deletion
+        cursor.execute('''
+            DELETE FROM maps
+            WHERE server_id = ? AND LOWER(mode_prefix) = LOWER(?)
+        ''', (server_id, mode_prefix))
+        
+        count = cursor.rowcount
+        
+        conn.commit()
+        conn.close()
+        
+        return True, count
+    
+    def find_map_prefixes(self, server_id: str, search_term: str = None) -> list:
+        """Find all map prefixes, optionally filtered by search term (case-insensitive)
+        
+        Args:
+            server_id: Server ID
+            search_term: Optional search term to filter prefixes
+            
+        Returns:
+            list: List of unique prefixes with map counts
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        if search_term:
+            cursor.execute('''
+                SELECT mode_prefix, COUNT(*) as map_count
+                FROM maps
+                WHERE server_id = ? AND LOWER(mode_prefix) LIKE LOWER(?)
+                GROUP BY mode_prefix
+                ORDER BY mode_prefix
+            ''', (server_id, f'%{search_term}%'))
+        else:
+            cursor.execute('''
+                SELECT mode_prefix, COUNT(*) as map_count
+                FROM maps
+                WHERE server_id = ?
+                GROUP BY mode_prefix
+                ORDER BY mode_prefix
+            ''', (server_id,))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        return [(prefix, count) for prefix, count in rows]
