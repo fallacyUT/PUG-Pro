@@ -376,24 +376,27 @@ class PUGQueue:
             
             elif self.state == 'ready_check':
                 # Already in ready check and queue just refilled (promoted from waiting)
-                # Check if all players are ready
-                all_ready = all(self.ready_responses.get(uid, False) for uid in self.queue)
+                # Need to start a fresh ready check for the new player
+                # Cancel old ready check
+                if self.ready_check_task:
+                    self.ready_check_task.cancel()
+                    self.ready_check_task = None
                 
-                if all_ready:
-                    # Everyone ready, proceed to captains/picking
-                    # Cancel ready check
-                    if self.ready_check_task:
-                        self.ready_check_task.cancel()
-                    
-                    # Delete ready check message
-                    if self.ready_check_message:
-                        try:
-                            await self.ready_check_message.delete()
-                        except:
-                            pass
-                    
-                    # Proceed to next phase
-                    await self.start_captain_selection()
+                # Delete old ready check message
+                if self.ready_check_message:
+                    try:
+                        await self.ready_check_message.delete()
+                    except:
+                        pass
+                    self.ready_check_message = None
+                
+                # Clear old ready responses
+                self.ready_responses = {}
+                
+                # Start fresh ready check with new player
+                self.state = 'waiting'  # Reset state first
+                self.state = 'ready_check'
+                await self.start_ready_check()
     
     async def check_inactivity_timeout(self):
         """Check if queue has been inactive for 4 hours and clear it"""
@@ -1604,7 +1607,8 @@ async def on_message(message):
     ctx = await bot.get_context(message)
     
     # Check for dynamic .list<mode> commands (e.g., .list4v4, .list2v2)
-    if content.startswith('.list') and len(content) > 5:
+    # But NOT actual commands like .listmapprefixes
+    if content.startswith('.list') and len(content) > 5 and not content.startswith('.listmap'):
         # Check channel restriction
         if not isinstance(ctx.channel, discord.DMChannel) and ctx.channel.name != ALLOWED_CHANNEL_NAME:
             return  # Silently ignore in wrong channel
@@ -2211,10 +2215,14 @@ async def list_queue(ctx, game_mode: str = None):
         # Resolve alias
         game_mode_resolved = db_manager.resolve_mode_alias(game_mode_input)
         
+        # Check if mode exists
+        mode_data = db_manager.get_game_mode(game_mode_resolved)
+        if not mode_data:
+            await ctx.send(f"❌ Game mode **{game_mode}** not found!\n\nUse `.modes` to see available modes.")
+            return
+        
         queue = get_queue(ctx.channel, game_mode_resolved)
         queue_list = queue.get_queue_list()
-        
-        mode_data = db_manager.get_game_mode(game_mode_resolved)
         
         if not queue_list:
             await ctx.send(f"**{mode_data['name']}** pug is empty!")
@@ -2724,7 +2732,7 @@ async def confirm_delete_map_prefix(ctx, prefix: str):
 
 @bot.command(name='listmapprefixes')
 async def list_map_prefixes(ctx):
-    """List all map prefixes in the database (Admin only)
+    """List all map prefixes in the database
     
     Shows all prefixes that have maps, including accidental ones.
     Helps identify which prefixes are valid vs accidental.
@@ -2732,23 +2740,19 @@ async def list_map_prefixes(ctx):
     Usage:
     .listmapprefixes
     """
-    if not is_admin(ctx):
-        await ctx.send("❌ You don't have permission to use this command!")
-        return
-    
     server_id = str(ctx.guild.id)
     
     # Get all prefixes
     all_prefixes = db_manager.find_map_prefixes(server_id)
     
     if not all_prefixes:
-        await ctx.send("📋 No map prefixes found in database!")
+        await ctx.send("📋 No map prefixes found in database!\n\nThis means no maps have been added yet. Use `.addmap <prefix> <maps>` to add some.")
         return
     
     # Build response
     embed = discord.Embed(
         title="🗺️ All Map Prefixes in Database",
-        description=f"Found {len(all_prefixes)} prefix(es) with maps",
+        description=f"Found {len(all_prefixes)} prefix(es) with maps\nServer ID: `{server_id}`",
         color=discord.Color.blue()
     )
     
@@ -2769,11 +2773,12 @@ async def list_map_prefixes(ctx):
     invalid_list = []
     
     for prefix, count in all_prefixes:
-        prefix_info = f"**{prefix}** ({count} maps)"
+        # Show actual database value in backticks for debugging
+        prefix_info = f"`{prefix}` ({count} maps)"
         if prefix.lower() in valid_prefixes:
             valid_list.append(f"✅ {prefix_info}")
         else:
-            invalid_list.append(f"⚠️ {prefix_info} - **ACCIDENTAL**")
+            invalid_list.append(f"⚠️ {prefix_info} - **ACCIDENTAL**\n   Delete with: `.deletemapprefix {prefix}`")
     
     if valid_list:
         embed.add_field(
@@ -2785,7 +2790,7 @@ async def list_map_prefixes(ctx):
     if invalid_list:
         embed.add_field(
             name="⚠️ Invalid/Accidental Prefixes",
-            value="\n".join(invalid_list) + "\n\nUse `.deletemapprefix <prefix>` to remove",
+            value="\n".join(invalid_list),
             inline=False
         )
     
