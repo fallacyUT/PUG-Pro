@@ -259,11 +259,17 @@ class PUGQueue:
             # Fire and forget DM task
             bot.loop.create_task(send_dm())
             
-            # If we're in ready_check state, initialize ready response for new player
+            # If we're in ready_check state, automatically mark promoted player as ready
+            # They joined the waiting list knowing they wanted to play, so assume they're ready
             if self.state == 'ready_check':
-                self.ready_responses[promoted_id] = False
+                self.ready_responses[promoted_id] = True
                 # Update the ready check display immediately
                 await self.update_ready_check_display()
+                
+                # Check if all players are now ready - if so, proceed immediately
+                all_ready = all(self.ready_responses.get(uid, False) == True for uid in self.queue)
+                if all_ready and self.ready_check_task:
+                    self.ready_check_task.cancel()
             
             await self.check_queue_full()
             return True
