@@ -10,7 +10,7 @@
 
 ---
 
-## 🎯 What's New in Version 2.0
+## 🎯 What's New in Version 2.1
 
 ### Major Update: Mode-Specific Per-Mode ELO
 
@@ -78,7 +78,7 @@ When playing:
 
 ### Check Status
 ```
-.permodelostatus      Show which modes have per-mode ELO
+.permodeelostatus      Show which modes have per-mode ELO
 ```
 
 **Example output:**
@@ -233,7 +233,7 @@ def get_player_elo(discord_id, server_id, mode_name):
 .permodeelo ctf
 ```
 
-**Old Command:** `.permodelostatus`  
+**Old Command:** `.permodeelostatus`  
 **Still works!** Now shows per-mode breakdown
 
 ---
@@ -279,7 +279,7 @@ Existing databases automatically get the new column with default value 0 (disabl
 .setmodeelo ctf @ProPlayer 1500
 
 # 4. Check configuration
-.permodelostatus
+.permodeelostatus
 ```
 
 ### Setup: All Modes Separate
@@ -334,7 +334,7 @@ A: No. Mode ELOs default to 1000 if not set. Or just don't enable per-mode ELO f
 A: Yes. `.permodeelo <mode>` toggles it. ELOs are preserved.
 
 **Q: How do I know which modes have per-mode ELO?**  
-A: Use `.permodelostatus` - shows complete breakdown.
+A: Use `.permodeelostatus` - shows complete breakdown.
 
 **Q: What if I enable per-mode ELO but don't set any ELOs?**  
 A: Players start at 1000 ELO for that mode.
@@ -421,7 +421,7 @@ Result: Toggles casual (if it was on, turns off; if off, turns on)
 
 ### Check Current Configuration
 ```
-.permodelostatus
+.permodeelostatus
 
 Shows exactly which modes have per-mode ELO
 ```
@@ -440,7 +440,7 @@ Shows exactly which modes have per-mode ELO
 **Commands:**
 ```
 .permodeelo <mode>                    Toggle per-mode ELO for mode
-.permodelostatus                      Show which modes have it
+.permodeelostatus                      Show which modes have it
 .setmodeelo <mode> <player> <elo>     Set mode-specific ELO
 ```
 

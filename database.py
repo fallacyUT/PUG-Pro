@@ -63,31 +63,83 @@ class DatabaseManager:
         except:
             # Column doesn't exist, need to migrate
             print("⚠️  Migrating players table to add server_id...")
+            print("   This migration PRESERVES all existing player data!")
             
-            # Get existing players
-            cursor.execute("SELECT discord_id, wins, losses, total_pugs, elo, ut2k4_player_name, ut2k4_last_scraped, created_at FROM players")
+            # Get existing players with ALL columns
+            cursor.execute("SELECT * FROM players")
             old_players = cursor.fetchall()
             
-            # Drop and recreate table
-            cursor.execute("DROP TABLE IF EXISTS players")
+            # Get column names
+            cursor.execute("PRAGMA table_info(players)")
+            old_columns = [col[1] for col in cursor.fetchall()]
+            
+            print(f"   Found {len(old_players)} players to migrate...")
+            
+            # Rename old table
+            cursor.execute("ALTER TABLE players RENAME TO players_old")
+            
+            # Create new table with server_id
             cursor.execute('''
                 CREATE TABLE players (
                     discord_id TEXT,
                     server_id TEXT,
+                    discord_name TEXT,
+                    display_name TEXT,
                     wins INTEGER DEFAULT 0,
                     losses INTEGER DEFAULT 0,
                     total_pugs INTEGER DEFAULT 0,
-                    elo REAL DEFAULT 700,
+                    elo REAL DEFAULT 1000,
                     ut2k4_player_name TEXT,
                     ut2k4_last_scraped TEXT,
+                    peak_elo REAL,
+                    current_streak INTEGER DEFAULT 0,
+                    best_win_streak INTEGER DEFAULT 0,
+                    best_loss_streak INTEGER DEFAULT 0,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (discord_id, server_id)
                 )
             ''')
             
+            # Migrate data - need to assign a default server_id
+            # Use 'default' as server_id for all existing players
+            print("   Migrating player data with server_id='default'...")
+            
+            # Build insert based on old columns
+            for old_player in old_players:
+                # Map old columns to values
+                player_dict = dict(zip(old_columns, old_player))
+                
+                cursor.execute('''
+                    INSERT INTO players 
+                    (discord_id, server_id, discord_name, display_name, wins, losses, total_pugs, 
+                     elo, ut2k4_player_name, ut2k4_last_scraped, peak_elo, current_streak, 
+                     best_win_streak, best_loss_streak, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    player_dict.get('discord_id'),
+                    'default',  # Default server_id for migrated players
+                    player_dict.get('discord_name'),
+                    player_dict.get('display_name'),
+                    player_dict.get('wins', 0),
+                    player_dict.get('losses', 0),
+                    player_dict.get('total_pugs', 0),
+                    player_dict.get('elo', 1000),
+                    player_dict.get('ut2k4_player_name'),
+                    player_dict.get('ut2k4_last_scraped'),
+                    player_dict.get('peak_elo', player_dict.get('elo', 1000)),
+                    player_dict.get('current_streak', 0),
+                    player_dict.get('best_win_streak', 0),
+                    player_dict.get('best_loss_streak', 0),
+                    player_dict.get('created_at')
+                ))
+            
+            # Drop old table
+            cursor.execute("DROP TABLE players_old")
+            
             conn.commit()
-            print(f"✅ Players table migrated. Old player data cleared (ELOs are now server-specific)")
-            print(f"   Players will be re-created as they join queues")
+            print(f"✅ Players table migrated successfully!")
+            print(f"   {len(old_players)} players migrated with server_id='default'")
+            print(f"   All ELOs, stats, and player data PRESERVED!")
 
         # Migration: Add current_streak column if it doesn't exist
         try:
@@ -181,6 +233,21 @@ class DatabaseManager:
             conn.commit()
             print("✅ Database migration: Added 'tiebreaker_map' column to pugs table")
         
+        # Migration: Add captain columns if they don't exist
+        try:
+            cursor.execute("SELECT red_captain FROM pugs LIMIT 1")
+        except:
+            cursor.execute("ALTER TABLE pugs ADD COLUMN red_captain TEXT")
+            conn.commit()
+            print("✅ Database migration: Added 'red_captain' column to pugs table")
+        
+        try:
+            cursor.execute("SELECT blue_captain FROM pugs LIMIT 1")
+        except:
+            cursor.execute("ALTER TABLE pugs ADD COLUMN blue_captain TEXT")
+            conn.commit()
+            print("✅ Database migration: Added 'blue_captain' column to pugs table")
+        
         # PUG teams table (many-to-many relationship)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS pug_teams (
@@ -216,12 +283,18 @@ class DatabaseManager:
             cursor.execute("SELECT server_id FROM pug_admins LIMIT 1")
         except:
             # Column doesn't exist, need to migrate
+            print("⚠️  Migrating pug_admins table to add server_id...")
+            
             # Get existing admins
             cursor.execute("SELECT discord_id FROM pug_admins")
             old_admins = cursor.fetchall()
             
-            # Drop and recreate table
-            cursor.execute("DROP TABLE IF EXISTS pug_admins")
+            print(f"   Found {len(old_admins)} admins to migrate...")
+            
+            # Rename old table
+            cursor.execute("ALTER TABLE pug_admins RENAME TO pug_admins_old")
+            
+            # Create new table
             cursor.execute('''
                 CREATE TABLE pug_admins (
                     discord_id TEXT,
@@ -230,11 +303,21 @@ class DatabaseManager:
                 )
             ''')
             
-            # Re-add old admins with a default server_id
-            # Note: Old admins won't have server association - admins need to re-add them
+            # Re-add old admins with default server_id
+            print("   Migrating admins with server_id='default'...")
+            for admin in old_admins:
+                cursor.execute('''
+                    INSERT INTO pug_admins (discord_id, server_id)
+                    VALUES (?, ?)
+                ''', (admin[0], 'default'))
+            
+            # Drop old table
+            cursor.execute("DROP TABLE pug_admins_old")
+            
             conn.commit()
-            print("✅ Database migration: Added 'server_id' to pug_admins table")
-            print("⚠️  Previous PUG admins were cleared - please re-add them per server")
+            print(f"✅ Database migration: Added 'server_id' to pug_admins table")
+            print(f"   {len(old_admins)} admins migrated with server_id='default'")
+            print(f"   All admin permissions PRESERVED!")
         
         # Game Modes table
         cursor.execute('''
@@ -243,9 +326,19 @@ class DatabaseManager:
                 display_name TEXT NOT NULL,
                 team_size INTEGER NOT NULL,
                 description TEXT,
-                per_mode_elo_enabled INTEGER DEFAULT 0
+                per_mode_elo_enabled INTEGER DEFAULT 0,
+                elo_prefix TEXT,
+                tiebreaker_enabled INTEGER DEFAULT 1
             )
         ''')
+        
+        # Migration: Add elo_prefix column if it doesn't exist
+        try:
+            cursor.execute("SELECT elo_prefix FROM game_modes LIMIT 1")
+        except:
+            cursor.execute("ALTER TABLE game_modes ADD COLUMN elo_prefix TEXT")
+            conn.commit()
+            print("✅ Database migration: Added 'elo_prefix' column to game_modes table")
         
         # Migration: Add per_mode_elo_enabled column if it doesn't exist
         try:
@@ -254,6 +347,14 @@ class DatabaseManager:
             cursor.execute("ALTER TABLE game_modes ADD COLUMN per_mode_elo_enabled INTEGER DEFAULT 0")
             conn.commit()
             print("✅ Database migration: Added 'per_mode_elo_enabled' column to game_modes table")
+        
+        # Migration: Add tiebreaker_enabled column if it doesn't exist
+        try:
+            cursor.execute("SELECT tiebreaker_enabled FROM game_modes LIMIT 1")
+        except:
+            cursor.execute("ALTER TABLE game_modes ADD COLUMN tiebreaker_enabled INTEGER DEFAULT 1")
+            conn.commit()
+            print("✅ Database migration: Added 'tiebreaker_enabled' column to game_modes table")
         
         # Mode Aliases table
         cursor.execute('''
@@ -280,6 +381,29 @@ class DatabaseManager:
                 last_updated TEXT DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (discord_id, server_id, mode_name),
                 FOREIGN KEY (mode_name) REFERENCES game_modes(mode_name) ON DELETE CASCADE
+            )
+        ''')
+        
+        # Maps table - store maps per mode/prefix
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS maps (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                server_id TEXT NOT NULL,
+                mode_prefix TEXT NOT NULL,
+                map_name TEXT NOT NULL,
+                added_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(server_id, mode_prefix, map_name)
+            )
+        ''')
+        
+        # Map cooldowns table - track recently used maps per server
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS map_cooldowns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                server_id TEXT NOT NULL,
+                mode_prefix TEXT NOT NULL,
+                map_name TEXT NOT NULL,
+                used_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         
@@ -677,16 +801,19 @@ class DatabaseManager:
     
     # PUG operations
     def add_pug(self, red_team: List[str], blue_team: List[str], game_mode: str, 
-                avg_red_elo: float, avg_blue_elo: float, tiebreaker_map: str = None) -> int:
+                avg_red_elo: float, avg_blue_elo: float, tiebreaker_map: str = None,
+                red_captain: str = None, blue_captain: str = None) -> int:
         """Add a new PUG and return the pug_id"""
         conn = self.get_connection()
         cursor = conn.cursor()
         
         # Insert PUG
         cursor.execute('''
-            INSERT INTO pugs (game_mode, avg_red_elo, avg_blue_elo, tiebreaker_map)
-            VALUES (?, ?, ?, ?)
-        ''', (game_mode, avg_red_elo, avg_blue_elo, tiebreaker_map))
+            INSERT INTO pugs (game_mode, avg_red_elo, avg_blue_elo, tiebreaker_map, red_captain, blue_captain)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (game_mode, avg_red_elo, avg_blue_elo, tiebreaker_map, 
+              str(red_captain) if red_captain else None, 
+              str(blue_captain) if blue_captain else None))
         
         pug_id = cursor.lastrowid
         
@@ -738,7 +865,7 @@ class DatabaseManager:
         cursor = conn.cursor()
         
         cursor.execute('''
-            SELECT pug_id, game_mode, winner, avg_red_elo, avg_blue_elo, timestamp, status, tiebreaker_map
+            SELECT pug_id, game_mode, winner, avg_red_elo, avg_blue_elo, timestamp, status, tiebreaker_map, red_captain, blue_captain
             FROM pugs
             ORDER BY pug_id DESC
             LIMIT ?
@@ -771,6 +898,8 @@ class DatabaseManager:
                 'timestamp': row[5],
                 'status': row[6] if len(row) > 6 else 'active',
                 'tiebreaker_map': row[7] if len(row) > 7 else None,
+                'red_captain': row[8] if len(row) > 8 else None,
+                'blue_captain': row[9] if len(row) > 9 else None,
                 'red_team': red_team,
                 'blue_team': blue_team
             })
@@ -1148,6 +1277,70 @@ class DatabaseManager:
         conn.close()
         return True, None
     
+    def set_mode_elo_prefix(self, mode_name: str, elo_prefix: str) -> tuple[bool, str]:
+        """Set the ELO prefix for a mode (for grouping modes with same prefix)
+        
+        Args:
+            mode_name: The mode to configure
+            elo_prefix: The prefix (e.g., 'ctf' for ctf2v2, ctf3v3, ctf5v5)
+            
+        Returns:
+            tuple: (success: bool, error_message: str or None)
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        # Check if mode exists
+        cursor.execute('SELECT mode_name FROM game_modes WHERE mode_name = ?', (mode_name,))
+        if not cursor.fetchone():
+            conn.close()
+            return False, f"Mode '{mode_name}' does not exist!"
+        
+        # Update elo_prefix
+        cursor.execute('''
+            UPDATE game_modes SET elo_prefix = ? WHERE mode_name = ?
+        ''', (elo_prefix.lower() if elo_prefix else None, mode_name))
+        
+        conn.commit()
+        conn.close()
+        return True, None
+    
+    def get_mode_elo_prefix(self, mode_name: str) -> Optional[str]:
+        """Get the ELO prefix for a mode
+        
+        Args:
+            mode_name: The mode name
+            
+        Returns:
+            str or None: The ELO prefix if set, None otherwise
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT elo_prefix FROM game_modes WHERE mode_name = ?', (mode_name,))
+        row = cursor.fetchone()
+        
+        conn.close()
+        return row[0] if row and row[0] else None
+    
+    def get_effective_mode_for_elo(self, mode_name: str) -> str:
+        """Get the effective mode name for ELO purposes
+        
+        If the mode has an elo_prefix, returns the prefix.
+        Otherwise returns the mode_name.
+        
+        This allows modes like ctf2v2, ctf3v3, ctf5v5 to share ELO
+        if they all have elo_prefix='ctf'.
+        
+        Args:
+            mode_name: The actual mode name
+            
+        Returns:
+            str: The effective mode name for ELO tracking
+        """
+        elo_prefix = self.get_mode_elo_prefix(mode_name)
+        return elo_prefix if elo_prefix else mode_name
+    
     def get_modes_with_per_mode_elo(self) -> list:
         """Get list of modes that have per-mode ELO enabled"""
         conn = self.get_connection()
@@ -1340,3 +1533,292 @@ class DatabaseManager:
             }
         
         return result
+
+    
+    # Map management operations
+    def add_map(self, server_id: str, mode_prefix: str, map_name: str) -> tuple:
+        """Add a map to a mode's map pool"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('''
+                INSERT INTO maps (server_id, mode_prefix, map_name)
+                VALUES (?, ?, ?)
+            ''', (server_id, mode_prefix.lower(), map_name))
+            
+            conn.commit()
+            conn.close()
+            return True, None
+        except Exception as e:
+            conn.close()
+            if 'UNIQUE constraint' in str(e):
+                return False, f"Map '{map_name}' already exists for {mode_prefix}!"
+            return False, str(e)
+    
+    def remove_map(self, server_id: str, mode_prefix: str, map_name: str) -> tuple:
+        """Remove a map from a mode's map pool"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        # Case-insensitive search for map
+        cursor.execute('''
+            DELETE FROM maps
+            WHERE server_id = ? AND mode_prefix = ? AND LOWER(map_name) = LOWER(?)
+        ''', (server_id, mode_prefix.lower(), map_name))
+        
+        deleted = cursor.rowcount > 0
+        conn.commit()
+        conn.close()
+        
+        if deleted:
+            return True, None
+        else:
+            return False, f"Map '{map_name}' not found for {mode_prefix}!"
+    
+    def get_maps_for_mode(self, server_id: str, mode_prefix: str) -> list:
+        """Get all maps for a specific mode/prefix"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT map_name FROM maps
+            WHERE server_id = ? AND mode_prefix = ?
+            ORDER BY map_name
+        ''', (server_id, mode_prefix.lower()))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        return [row[0] for row in rows]
+    
+    def get_all_maps_grouped(self, server_id: str) -> dict:
+        """Get all maps grouped by mode prefix"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT mode_prefix, map_name FROM maps
+            WHERE server_id = ?
+            ORDER BY mode_prefix, map_name
+        ''', (server_id,))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        result = {}
+        for prefix, map_name in rows:
+            if prefix not in result:
+                result[prefix] = []
+            result[prefix].append(map_name)
+        
+        return result
+    
+    def add_map_to_cooldown(self, server_id: str, mode_prefix: str, map_name: str):
+        """Add a map to the cooldown list"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO map_cooldowns (server_id, mode_prefix, map_name)
+            VALUES (?, ?, ?)
+        ''', (server_id, mode_prefix.lower(), map_name))
+        
+        conn.commit()
+        conn.close()
+    
+    def get_maps_on_cooldown(self, server_id: str, mode_prefix: str, cooldown_count: int = 3) -> list:
+        """Get the most recently used maps (on cooldown)"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT map_name FROM map_cooldowns
+            WHERE server_id = ? AND mode_prefix = ?
+            ORDER BY used_at DESC
+            LIMIT ?
+        ''', (server_id, mode_prefix.lower(), cooldown_count))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        return [row[0] for row in rows]
+    
+    def clear_old_cooldowns(self, server_id: str, mode_prefix: str, keep_count: int = 10):
+        """Clear old cooldown entries"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            DELETE FROM map_cooldowns
+            WHERE server_id = ? AND mode_prefix = ?
+            AND id NOT IN (
+                SELECT id FROM map_cooldowns
+                WHERE server_id = ? AND mode_prefix = ?
+                ORDER BY used_at DESC
+                LIMIT ?
+            )
+        ''', (server_id, mode_prefix.lower(), server_id, mode_prefix.lower(), keep_count))
+        
+        conn.commit()
+        conn.close()
+    
+    def set_tiebreaker_enabled(self, mode_name: str, enabled: bool) -> tuple:
+        """Enable or disable tiebreaker for a specific mode"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT mode_name FROM game_modes WHERE mode_name = ?', (mode_name,))
+        if not cursor.fetchone():
+            conn.close()
+            return False, f"Mode '{mode_name}' does not exist!"
+        
+        cursor.execute('''
+            UPDATE game_modes SET tiebreaker_enabled = ? WHERE mode_name = ?
+        ''', (1 if enabled else 0, mode_name))
+        
+        conn.commit()
+        conn.close()
+        return True, None
+    
+    def is_tiebreaker_enabled(self, mode_name: str) -> bool:
+        """Check if tiebreaker is enabled for a mode"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT tiebreaker_enabled FROM game_modes WHERE mode_name = ?', (mode_name,))
+        row = cursor.fetchone()
+        
+        conn.close()
+        return row[0] == 1 if row and row[0] is not None else True  # Default to enabled
+    
+    def validate_mode_for_maps(self, mode_prefix: str) -> tuple:
+        """Validate that a mode/prefix exists and is properly configured for maps
+        
+        Returns:
+            tuple: (is_valid: bool, error_message: str or None, effective_prefix: str or None)
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        # Check if this is an actual mode name
+        cursor.execute('SELECT mode_name, elo_prefix FROM game_modes WHERE mode_name = ?', (mode_prefix,))
+        mode_row = cursor.fetchone()
+        
+        if mode_row:
+            # It's a mode name - check if it has a prefix or use the mode name itself
+            mode_name, elo_prefix = mode_row
+            effective_prefix = elo_prefix if elo_prefix else mode_name
+            conn.close()
+            return True, None, effective_prefix
+        
+        # Not a direct mode match - check if it's used as a prefix by any modes
+        cursor.execute('SELECT COUNT(*) FROM game_modes WHERE elo_prefix = ?', (mode_prefix,))
+        count = cursor.fetchone()[0]
+        
+        conn.close()
+        
+        if count > 0:
+            # It's a valid prefix used by modes
+            return True, None, mode_prefix
+        else:
+            # Not a mode and not a prefix
+            return False, f"'{mode_prefix}' is not a valid mode or prefix. Use a mode name or set an ELO prefix with .seteloprefix first.", None
+    
+    def remove_all_maps(self, server_id: str, mode_prefix: str) -> tuple:
+        """Remove all maps from a mode's map pool
+        
+        Returns:
+            tuple: (success: bool, count: int)
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            DELETE FROM maps
+            WHERE server_id = ? AND mode_prefix = ?
+        ''', (server_id, mode_prefix.lower()))
+        
+        count = cursor.rowcount
+        
+        conn.commit()
+        conn.close()
+        
+        return True, count
+    
+    def get_maps_for_prefix_exact(self, server_id: str, mode_prefix: str) -> list:
+        """Get all maps for a specific prefix WITHOUT lowercasing (for cleanup)
+        
+        This is used for cleaning up accidental prefixes that may have odd casing.
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        # Case-insensitive search
+        cursor.execute('''
+            SELECT map_name FROM maps
+            WHERE server_id = ? AND LOWER(mode_prefix) = LOWER(?)
+            ORDER BY map_name
+        ''', (server_id, mode_prefix))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        return [row[0] for row in rows]
+    
+    def remove_all_maps_exact(self, server_id: str, mode_prefix: str) -> tuple:
+        """Remove all maps from a prefix WITHOUT lowercasing (for cleanup)
+        
+        Returns:
+            tuple: (success: bool, count: int)
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        # Case-insensitive deletion
+        cursor.execute('''
+            DELETE FROM maps
+            WHERE server_id = ? AND LOWER(mode_prefix) = LOWER(?)
+        ''', (server_id, mode_prefix))
+        
+        count = cursor.rowcount
+        
+        conn.commit()
+        conn.close()
+        
+        return True, count
+    
+    def find_map_prefixes(self, server_id: str, search_term: str = None) -> list:
+        """Find all map prefixes, optionally filtered by search term (case-insensitive)
+        
+        Args:
+            server_id: Server ID
+            search_term: Optional search term to filter prefixes
+            
+        Returns:
+            list: List of unique prefixes with map counts
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        if search_term:
+            cursor.execute('''
+                SELECT mode_prefix, COUNT(*) as map_count
+                FROM maps
+                WHERE server_id = ? AND LOWER(mode_prefix) LIKE LOWER(?)
+                GROUP BY mode_prefix
+                ORDER BY mode_prefix
+            ''', (server_id, f'%{search_term}%'))
+        else:
+            cursor.execute('''
+                SELECT mode_prefix, COUNT(*) as map_count
+                FROM maps
+                WHERE server_id = ?
+                GROUP BY mode_prefix
+                ORDER BY mode_prefix
+            ''', (server_id,))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        return [(prefix, count) for prefix, count in rows]

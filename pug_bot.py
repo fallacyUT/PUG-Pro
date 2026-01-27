@@ -11,7 +11,7 @@ For: Competitive Gaming Communities
 Bot made for Competitive Gaming Communities to use for Pick Up Games (PUGs)
 Any questions? Please message fallacy on Discord.
 
-Version: 1.0
+Version: 2.1
 """
 
 import discord
@@ -259,11 +259,17 @@ class PUGQueue:
             # Fire and forget DM task
             bot.loop.create_task(send_dm())
             
-            # If we're in ready_check state, initialize ready response for new player
+            # If we're in ready_check state, automatically mark promoted player as ready
+            # They joined the waiting list knowing they wanted to play, so assume they're ready
             if self.state == 'ready_check':
-                self.ready_responses[promoted_id] = False
+                self.ready_responses[promoted_id] = True
                 # Update the ready check display immediately
                 await self.update_ready_check_display()
+                
+                # Check if all players are now ready - if so, proceed immediately
+                all_ready = all(self.ready_responses.get(uid, False) == True for uid in self.queue)
+                if all_ready and self.ready_check_task:
+                    self.ready_check_task.cancel()
             
             await self.check_queue_full()
             return True
@@ -330,13 +336,22 @@ class PUGQueue:
             
             # If was in ready check and queue is no longer full, cancel ready check
             if was_in_ready_check and len(self.queue) < self.team_size:
-                # Cancel ready check task
-                if self.ready_check_task:
-                    self.ready_check_task.cancel()
-                
-                # Return to waiting state
+                # IMPORTANT: Change state BEFORE cancelling task to prevent race condition
+                # This ensures wait_for_ready_check sees the correct state when it wakes up
                 self.state = 'waiting'
                 self.ready_responses = {}
+                
+                # Delete the old ready check message so it can be reposted when queue refills
+                if self.ready_check_message:
+                    try:
+                        await self.ready_check_message.delete()
+                    except:
+                        pass
+                    self.ready_check_message = None
+                
+                # Now cancel the ready check task
+                if self.ready_check_task:
+                    self.ready_check_task.cancel()
                 
                 mode_data = db_manager.get_game_mode(self.game_mode_name)
                 remaining = len(self.queue)
@@ -376,24 +391,27 @@ class PUGQueue:
             
             elif self.state == 'ready_check':
                 # Already in ready check and queue just refilled (promoted from waiting)
-                # Check if all players are ready
-                all_ready = all(self.ready_responses.get(uid, False) for uid in self.queue)
+                # Need to start a fresh ready check for the new player
+                # Cancel old ready check
+                if self.ready_check_task:
+                    self.ready_check_task.cancel()
+                    self.ready_check_task = None
                 
-                if all_ready:
-                    # Everyone ready, proceed to captains/picking
-                    # Cancel ready check
-                    if self.ready_check_task:
-                        self.ready_check_task.cancel()
-                    
-                    # Delete ready check message
-                    if self.ready_check_message:
-                        try:
-                            await self.ready_check_message.delete()
-                        except:
-                            pass
-                    
-                    # Proceed to next phase
-                    await self.start_captain_selection()
+                # Delete old ready check message
+                if self.ready_check_message:
+                    try:
+                        await self.ready_check_message.delete()
+                    except:
+                        pass
+                    self.ready_check_message = None
+                
+                # Clear old ready responses
+                self.ready_responses = {}
+                
+                # Start fresh ready check with new player
+                self.state = 'waiting'  # Reset state first
+                self.state = 'ready_check'
+                await self.start_ready_check()
     
     async def check_inactivity_timeout(self):
         """Check if queue has been inactive for 4 hours and clear it"""
@@ -589,7 +607,7 @@ class PUGQueue:
             await self.channel.send(
                 f"❌ {', '.join(mentions)} removed from pug for not readying up in time."
             )
-            self.state = 'waiting'
+            # Don't reset state yet - check if queue will refill first
             self.ready_responses = {}
             
             # Try to promote from waiting queue to fill empty spots
@@ -631,7 +649,19 @@ class PUGQueue:
             
             # Check if queue filled back up after promotions
             if len(self.queue) == self.team_size:
+                # Queue is full again, start new ready check
                 await self.check_queue_full()
+            else:
+                # Queue didn't fill, return to waiting state
+                # Delete the old ready check message so it can be reposted when queue refills
+                if self.ready_check_message:
+                    try:
+                        await self.ready_check_message.delete()
+                    except:
+                        pass
+                    self.ready_check_message = None
+                
+                self.state = 'waiting'
         else:
             # Save initial queue order NOW before any picks happen
             self.initial_queue = self.queue.copy()
@@ -788,15 +818,12 @@ class PUGQueue:
                 self.state = 'waiting'
                 return
             
-            # Get all player ELOs
+            # Get all player ELOs (mode-aware)
             all_elos = {}
             for uid in all_players:
-                player_data = db_manager.get_player(uid, self.server_id)
-                if not player_data:
-                    await self.channel.send(f"❌ Cannot autopick: player data missing for <@{uid}>")
-                    self.state = 'waiting'
-                    return
-                all_elos[uid] = player_data['elo']
+                # Use get_player_elo to support per-mode ELO
+                elo = get_player_elo(uid, self.server_id, self.game_mode_name)
+                all_elos[uid] = elo
             
             # Calculate how many players per team
             players_per_team = self.max_per_team
@@ -881,6 +908,12 @@ class PUGQueue:
                 # Assign teams
                 self.red_team = list(best_red_picks)
                 self.blue_team = [uid for uid in all_players if uid not in best_red_picks]
+                
+                # Safety check: ensure teams are not empty
+                if not self.red_team or not self.blue_team:
+                    await self.channel.send("❌ Error: Team assignment resulted in empty team. Please try manual picking.")
+                    self.state = 'selecting_captains'
+                    return
                 
                 # Calculate final stats for logging
                 red_total = sum(all_elos[uid] for uid in self.red_team)
@@ -1114,28 +1147,44 @@ class PUGQueue:
             
             # Add tiebreaker map for 4v4 PUGs
             if self.team_size == 8:  # 4v4
-                server_id = str(self.channel.guild.id)
+                # Check if tiebreaker is enabled for this mode
+                tiebreaker_enabled = db_manager.is_tiebreaker_enabled(self.game_mode_name)
                 
-                # Initialize cooldown tracking for this server
-                if server_id not in recent_tiebreakers:
-                    recent_tiebreakers[server_id] = []
-                
-                # Get maps that are NOT on cooldown
-                on_cooldown = recent_tiebreakers[server_id]
-                available_maps = [m for m in MAP_POOL if m not in on_cooldown]
-                
-                # If all maps are on cooldown (shouldn't happen with 14 maps), reset
-                if not available_maps:
-                    recent_tiebreakers[server_id] = []
-                    available_maps = MAP_POOL.copy()
-                
-                # Select random tiebreaker from available maps
-                tiebreaker = random.choice(available_maps)
-                
-                # Store this tiebreaker (will be added to cooldown in finish_picking)
-                self.selected_tiebreaker = tiebreaker
-                
-                embed.add_field(name="Tiebreaker", value=tiebreaker, inline=False)
+                if tiebreaker_enabled:
+                    server_id = str(self.channel.guild.id)
+                    
+                    # Get effective mode for map selection (use elo_prefix if set)
+                    effective_mode = db_manager.get_effective_mode_for_elo(self.game_mode_name)
+                    
+                    # Get maps for this mode
+                    mode_maps = db_manager.get_maps_for_mode(server_id, effective_mode)
+                    
+                    # Only show tiebreaker if maps are configured
+                    if mode_maps:
+                        # Get maps on cooldown
+                        on_cooldown = db_manager.get_maps_on_cooldown(server_id, effective_mode, cooldown_count=3)
+                        
+                        # Get available maps (not on cooldown)
+                        available_maps = [m for m in mode_maps if m not in on_cooldown]
+                        
+                        # If all maps are on cooldown, reset and use all maps
+                        if not available_maps:
+                            db_manager.clear_old_cooldowns(server_id, effective_mode, keep_count=0)
+                            available_maps = mode_maps.copy()
+                        
+                        # Select random tiebreaker from available maps
+                        tiebreaker = random.choice(available_maps)
+                        
+                        # Store this tiebreaker (will be added to cooldown in finish_picking)
+                        self.selected_tiebreaker = tiebreaker
+                        self.selected_tiebreaker_mode = effective_mode  # Store mode for cooldown tracking
+                        
+                        embed.add_field(name="Tiebreaker", value=tiebreaker, inline=False)
+                        print(f"[TIEBREAKER] Selected {tiebreaker} for {self.game_mode_name} (mode: {effective_mode})")
+                    else:
+                        print(f"[TIEBREAKER] No maps configured for {self.game_mode_name} (mode: {effective_mode}) - tiebreaker skipped")
+                else:
+                    print(f"[TIEBREAKER] Tiebreaker disabled for {self.game_mode_name} - skipped")
         else:
             # Show available players only during picking
             available = self.get_available_players()
@@ -1195,25 +1244,34 @@ class PUGQueue:
                 game_mode=self.game_mode_name,
                 avg_red_elo=avg_red_elo,
                 avg_blue_elo=avg_blue_elo,
-                tiebreaker_map=self.selected_tiebreaker if self.team_size == 8 else None
+                tiebreaker_map=self.selected_tiebreaker if self.team_size == 8 else None,
+                red_captain=self.red_captain,
+                blue_captain=self.blue_captain
             )
             
             await self.channel.send(f"This is PUG #{pug_number}. Use `.winner red` or `.winner blue` to report the result")
             
-            # Add tiebreaker to cooldown list (keep last 3)
-            if self.selected_tiebreaker and self.team_size == 8:
+            # Add tiebreaker to cooldown list (database-backed)
+            if hasattr(self, 'selected_tiebreaker') and self.selected_tiebreaker and self.team_size == 8:
                 server_id = str(self.channel.guild.id)
-                if server_id not in recent_tiebreakers:
-                    recent_tiebreakers[server_id] = []
                 
-                # Add this tiebreaker to the front of the list
-                recent_tiebreakers[server_id].insert(0, self.selected_tiebreaker)
+                # Get the mode prefix used for tiebreaker selection
+                if hasattr(self, 'selected_tiebreaker_mode'):
+                    mode_prefix = self.selected_tiebreaker_mode
+                else:
+                    mode_prefix = db_manager.get_effective_mode_for_elo(self.game_mode_name)
                 
-                # Keep only the last 3 tiebreakers
-                recent_tiebreakers[server_id] = recent_tiebreakers[server_id][:3]
+                # Add to database cooldown
+                db_manager.add_map_to_cooldown(server_id, mode_prefix, self.selected_tiebreaker)
+                
+                # Clean up old cooldowns (keep last 10 for history)
+                db_manager.clear_old_cooldowns(server_id, mode_prefix, keep_count=10)
             
             # Store the PUG ID for deadpug functionality
             self.last_pug_id = pug_number
+            
+            # Debug: Log before reset
+            print(f"[DEBUG] Before reset: queue={len(self.queue)}, waiting={len(self.waiting_queue)}, state={self.state}")
             
             # Remove all players in this PUG from other queues in same channel
             all_players = self.red_team + self.blue_team
@@ -1224,6 +1282,9 @@ class PUGQueue:
             waiting_count = len(self.waiting_queue)
             
             self.hard_reset()  # Use hard_reset to completely clear queue (moves waiting to main)
+            
+            # Debug: Log after reset
+            print(f"[DEBUG] After reset: queue={len(self.queue)}, waiting={len(self.waiting_queue)}, state={self.state}")
             
             # Notify if waiting queue players were promoted
             if had_waiting_players:
@@ -1384,6 +1445,9 @@ def get_elo_rank(elo):
 def get_player_elo(discord_id, server_id, mode_name=None):
     """Get player's ELO - mode-specific if that mode has per-mode ELO enabled, else global
     
+    If the mode has an elo_prefix set, uses that prefix for ELO lookup.
+    This allows modes like ctf2v2, ctf3v3, ctf5v5 to share the same ELO pool.
+    
     Args:
         discord_id: Player's Discord ID
         server_id: Server ID
@@ -1393,8 +1457,10 @@ def get_player_elo(discord_id, server_id, mode_name=None):
         float: Player's ELO rating (mode-specific or global)
     """
     if mode_name and db_manager.is_per_mode_elo_enabled(mode_name):
-        # This mode has per-mode ELO enabled - use mode-specific ELO
-        mode_elo_data = db_manager.get_player_mode_elo(discord_id, server_id, mode_name)
+        # This mode has per-mode ELO enabled
+        # Get the effective mode name (uses elo_prefix if set)
+        effective_mode = db_manager.get_effective_mode_for_elo(mode_name)
+        mode_elo_data = db_manager.get_player_mode_elo(discord_id, server_id, effective_mode)
         return mode_elo_data['elo']
     else:
         # This mode doesn't have per-mode ELO or no mode specified - use global ELO
@@ -1566,7 +1632,8 @@ async def on_message(message):
     ctx = await bot.get_context(message)
     
     # Check for dynamic .list<mode> commands (e.g., .list4v4, .list2v2)
-    if content.startswith('.list') and len(content) > 5:
+    # But NOT actual commands like .listmapprefixes
+    if content.startswith('.list') and len(content) > 5 and not content.startswith('.listmap'):
         # Check channel restriction
         if not isinstance(ctx.channel, discord.DMChannel) and ctx.channel.name != ALLOWED_CHANNEL_NAME:
             return  # Silently ignore in wrong channel
@@ -1768,11 +1835,21 @@ async def on_reaction_add(reaction, user):
                     # Check if queue is still full after decline
                     if len(queue.queue) < queue.team_size:
                         # Queue is no longer full, abort ready check and return to waiting
-                        if queue.ready_check_task:
-                            queue.ready_check_task.cancel()
-                        
+                        # IMPORTANT: Change state BEFORE cancelling task to prevent race condition
                         queue.state = 'waiting'
                         queue.ready_responses = {}
+                        
+                        # Delete the old ready check message so it can be reposted when queue refills
+                        if queue.ready_check_message:
+                            try:
+                                await queue.ready_check_message.delete()
+                            except:
+                                pass
+                            queue.ready_check_message = None
+                        
+                        # Now cancel the ready check task
+                        if queue.ready_check_task:
+                            queue.ready_check_task.cancel()
                         
                         mode_data = db_manager.get_game_mode(queue.game_mode_name)
                         remaining = len(queue.queue)
@@ -2173,10 +2250,14 @@ async def list_queue(ctx, game_mode: str = None):
         # Resolve alias
         game_mode_resolved = db_manager.resolve_mode_alias(game_mode_input)
         
+        # Check if mode exists
+        mode_data = db_manager.get_game_mode(game_mode_resolved)
+        if not mode_data:
+            await ctx.send(f"❌ Game mode **{game_mode}** not found!\n\nUse `.modes` to see available modes.")
+            return
+        
         queue = get_queue(ctx.channel, game_mode_resolved)
         queue_list = queue.get_queue_list()
-        
-        mode_data = db_manager.get_game_mode(game_mode_resolved)
         
         if not queue_list:
             await ctx.send(f"**{mode_data['name']}** pug is empty!")
@@ -2189,8 +2270,8 @@ async def list_queue(ctx, game_mode: str = None):
         
         players = []
         for i, uid in enumerate(queue_list):
-            player_data = db_manager.get_player(uid, str(ctx.guild.id))
-            elo = player_data['elo']
+            # Use get_player_elo to check if mode has per-mode ELO enabled
+            elo = get_player_elo(uid, str(ctx.guild.id), game_mode_resolved)
             rank = get_elo_rank(elo)
             member = ctx.guild.get_member(uid)
             name = member.display_name if member else f"Player_{uid}"
@@ -2202,8 +2283,8 @@ async def list_queue(ctx, game_mode: str = None):
         if queue.waiting_queue:
             waiting_players = []
             for i, uid in enumerate(queue.waiting_queue):
-                player_data = db_manager.get_player(uid, str(ctx.guild.id))
-                elo = player_data['elo']
+                # Use get_player_elo to check if mode has per-mode ELO enabled
+                elo = get_player_elo(uid, str(ctx.guild.id), game_mode_resolved)
                 rank = get_elo_rank(elo)
                 member = ctx.guild.get_member(uid)
                 name = member.display_name if member else f"Player_{uid}"
@@ -2235,18 +2316,28 @@ async def list_queue(ctx, game_mode: str = None):
         embed = discord.Embed(title="Active Pugs", color=discord.Color.blue())
         
         for queue_key, queue in channel_queues.items():
-            if queue.queue:
+            if queue.queue or queue.state != 'waiting':  # Show if has players OR not in waiting state
                 mode_data = db_manager.get_game_mode(queue.game_mode_name)
+                
+                # Add state indicator
+                state_indicator = ""
+                if queue.state == 'ready_check':
+                    state_indicator = " [READY CHECK]"
+                elif queue.state == 'selecting_captains':
+                    state_indicator = " [SELECTING CAPTAINS]"
+                elif queue.state == 'picking':
+                    state_indicator = " [PICKING TEAMS]"
+                
                 players = []
                 for uid in queue.queue:
-                    player_data = db_manager.get_player(uid, str(ctx.guild.id))
-                    elo = player_data['elo']
+                    # Use get_player_elo to check if mode has per-mode ELO enabled
+                    elo = get_player_elo(uid, str(ctx.guild.id), queue.game_mode_name)
                     rank = get_elo_rank(elo)
                     member = ctx.guild.get_member(uid)
                     name = member.display_name if member else f"Player_{uid}"
                     players.append(f"{name} - {elo:.0f} ({rank})")
                 
-                field_name = f"{mode_data['name']} ({len(queue.queue)}/{queue.team_size})"
+                field_name = f"{mode_data['name']} ({len(queue.queue)}/{queue.team_size}){state_indicator}"
                 if queue.waiting_queue:
                     field_name += f" + {len(queue.waiting_queue)} waiting"
                 
@@ -2467,96 +2558,361 @@ async def remove_alias(ctx, alias: str):
         await ctx.send(f"❌ {error}")
 
 @bot.command(name='addmap')
-async def add_map(ctx, *, map_name: str):
-    """Add a map to the map pool (Admin only). Example: .addmap DM-Deck16"""
+async def add_map_cmd(ctx, mode_prefix: str, *, maps: str):
+    """Add map(s) to a mode's map pool (Admin only)
+    
+    Usage:
+    .addmap ctf CTF-Face                              Add one map
+    .addmap ctf CTF-Face, CTF-LavaGiant, CTF-Orbital  Add multiple maps (comma-separated)
+    .addmap tam DM-Rankin, DM-Deck17, DM-Morpheus     Add multiple maps
+    
+    The mode_prefix should be either:
+    - A mode name (e.g., 'duel') if the mode has no ELO prefix set
+    - An ELO prefix (e.g., 'ctf') that groups multiple modes together
+    
+    Use .seteloprefix <mode> <prefix> first to set up prefix grouping.
+    """
     if not is_admin(ctx):
         await ctx.send("❌ You don't have permission to use this command!")
-        return
-    
-    # Check if map already exists
-    if map_name in MAP_POOL:
-        await ctx.send(f"❌ **{map_name}** is already in the map pool!")
-        return
-    
-    # Add to map pool
-    MAP_POOL.append(map_name)
-    MAP_POOL.sort()  # Keep alphabetically sorted
-    
-    await ctx.send(f"✅ Added **{map_name}** to the map pool! (Total: {len(MAP_POOL)} maps)")
-
-@bot.command(name='removemap')
-async def remove_map(ctx, *, map_name: str):
-    """Remove a map from the map pool (Admin only). Example: .removemap DM-Deck16"""
-    if not is_admin(ctx):
-        await ctx.send("❌ You don't have permission to use this command!")
-        return
-    
-    # Check if map exists
-    if map_name not in MAP_POOL:
-        await ctx.send(f"❌ **{map_name}** is not in the map pool!")
-        return
-    
-    # Remove from map pool
-    MAP_POOL.remove(map_name)
-    
-    # Also remove from all server cooldown lists
-    for server_id in list(recent_tiebreakers.keys()):
-        if map_name in recent_tiebreakers[server_id]:
-            recent_tiebreakers[server_id].remove(map_name)
-    
-    await ctx.send(f"✅ Removed **{map_name}** from the map pool! (Total: {len(MAP_POOL)} maps)")
-
-@bot.command(name='maps', aliases=['maplist'])
-async def list_maps(ctx):
-    """Show all maps in the tiebreaker pool with cooldown status"""
-    if not MAP_POOL:
-        await ctx.send("📋 No maps in the pool!")
         return
     
     server_id = str(ctx.guild.id)
     
+    # Validate that the mode/prefix exists and get the effective prefix
+    is_valid, error, effective_prefix = db_manager.validate_mode_for_maps(mode_prefix)
+    
+    if not is_valid:
+        await ctx.send(f"❌ {error}\n\n**How to fix:**\n• Create a mode with `.addmode <name> <size>`\n• Set ELO prefix with `.seteloprefix <mode> <prefix>`\n• Then add maps with `.addmap <prefix> <maps>`")
+        return
+    
+    # Split by comma and clean up whitespace
+    map_list = [m.strip() for m in maps.split(',')]
+    
+    added_maps = []
+    failed_maps = []
+    
+    for map_name in map_list:
+        if not map_name:  # Skip empty strings
+            continue
+            
+        success, error = db_manager.add_map(server_id, effective_prefix, map_name)
+        
+        if success:
+            added_maps.append(map_name)
+        else:
+            failed_maps.append(f"{map_name} ({error})")
+    
+    # Build response
+    if added_maps:
+        total_maps = db_manager.get_maps_for_mode(server_id, effective_prefix)
+        response = f"✅ Added **{len(added_maps)}** map(s) to **{effective_prefix}** pool:\n"
+        response += "• " + "\n• ".join(added_maps)
+        response += f"\n\nTotal maps in **{effective_prefix}**: {len(total_maps)}"
+        
+        if failed_maps:
+            response += f"\n\n⚠️ Failed to add {len(failed_maps)} map(s):\n"
+            response += "• " + "\n• ".join(failed_maps)
+        
+        await ctx.send(response)
+    elif failed_maps:
+        response = f"❌ Failed to add any maps:\n• " + "\n• ".join(failed_maps)
+        await ctx.send(response)
+    else:
+        await ctx.send("❌ No valid maps provided!")
+
+@bot.command(name='removemap')
+async def remove_map_cmd(ctx, mode_prefix: str, *, map_name: str):
+    """Remove a map from a mode's map pool (Admin only)
+    
+    Usage:
+    .removemap ctf CTF-Deck16
+    .removemap tam DM-Rankin
+    
+    Map names are case-insensitive.
+    """
+    if not is_admin(ctx):
+        await ctx.send("❌ You don't have permission to use this command!")
+        return
+    
+    server_id = str(ctx.guild.id)
+    
+    # Validate that the mode/prefix exists
+    is_valid, error, effective_prefix = db_manager.validate_mode_for_maps(mode_prefix)
+    
+    if not is_valid:
+        await ctx.send(f"❌ {error}")
+        return
+    
+    success, error = db_manager.remove_map(server_id, effective_prefix, map_name)
+    
+    if success:
+        maps = db_manager.get_maps_for_mode(server_id, effective_prefix)
+        await ctx.send(f"✅ Removed **{map_name}** from **{effective_prefix}** map pool! (Total: {len(maps)} maps)")
+    else:
+        # Show current maps to help user
+        current_maps = db_manager.get_maps_for_mode(server_id, effective_prefix)
+        if current_maps:
+            map_list = ", ".join(current_maps[:5])
+            if len(current_maps) > 5:
+                map_list += f", ... ({len(current_maps)} total)"
+            await ctx.send(f"❌ {error}\n\n**Current maps in {effective_prefix}:** {map_list}\n\nUse `.maps {effective_prefix}` to see all maps.")
+        else:
+            await ctx.send(f"❌ {error}\n\n**{effective_prefix}** has no maps configured.")
+
+@bot.command(name='removeallmaps')
+async def remove_all_maps_cmd(ctx, mode_prefix: str):
+    """Remove ALL maps from a mode's map pool (Admin only)
+    
+    Usage:
+    .removeallmaps ctf
+    .removeallmaps tam
+    
+    ⚠️ WARNING: This will delete ALL maps for the specified mode/prefix!
+    """
+    if not is_admin(ctx):
+        await ctx.send("❌ You don't have permission to use this command!")
+        return
+    
+    server_id = str(ctx.guild.id)
+    
+    # Validate that the mode/prefix exists
+    is_valid, error, effective_prefix = db_manager.validate_mode_for_maps(mode_prefix)
+    
+    if not is_valid:
+        await ctx.send(f"❌ {error}")
+        return
+    
+    # Get current maps before deletion
+    current_maps = db_manager.get_maps_for_mode(server_id, effective_prefix)
+    
+    if not current_maps:
+        await ctx.send(f"❌ **{effective_prefix}** has no maps to remove!")
+        return
+    
+    # Delete all maps for this prefix
+    success, count = db_manager.remove_all_maps(server_id, effective_prefix)
+    
+    if success:
+        await ctx.send(f"✅ Removed **{count}** map(s) from **{effective_prefix}** map pool!\n\n**Deleted maps:**\n• " + "\n• ".join(current_maps))
+    else:
+        await ctx.send(f"❌ Failed to remove maps from **{effective_prefix}**!")
+
+@bot.command(name='deletemapprefix')
+async def delete_map_prefix(ctx, prefix: str):
+    """Delete an invalid/accidental map prefix from the database (Admin only)
+    
+    This is for fixing mistakes where a map name was accidentally used as a prefix.
+    Case-insensitive - converts to lowercase automatically.
+    
+    Usage:
+    .deletemapprefix ABSOLUTE-TE
+    .deletemapprefix absolute-te    (same result)
+    
+    ⚠️ WARNING: This will delete ALL maps associated with this prefix!
+    Use this only to clean up accidental prefix entries.
+    """
+    if not is_admin(ctx):
+        await ctx.send("❌ You don't have permission to use this command!")
+        return
+    
+    server_id = str(ctx.guild.id)
+    
+    # Get maps for this prefix (get_maps_for_mode already lowercases the prefix)
+    current_maps = db_manager.get_maps_for_mode(server_id, prefix)
+    
+    if not current_maps:
+        await ctx.send(f"❌ No maps found for prefix **{prefix.lower()}**!\n\nTip: Use `.listmapprefixes` to see all existing prefixes.")
+        return
+    
+    # Show what will be deleted and ask for confirmation
+    map_list = "\n• ".join(current_maps)
+    
+    await ctx.send(
+        f"⚠️ **WARNING: About to delete map prefix '{prefix.lower()}'**\n\n"
+        f"**{len(current_maps)} map(s) will be deleted:**\n• {map_list}\n\n"
+        f"**To confirm deletion, type:** `.confirmdeletemapprefix {prefix}`"
+    )
+
+@bot.command(name='confirmdeletemapprefix')
+async def confirm_delete_map_prefix(ctx, prefix: str):
+    """Confirm deletion of an accidental map prefix (Admin only)
+    
+    This is the confirmation step for .deletemapprefix
+    Case-insensitive - converts to lowercase automatically.
+    """
+    if not is_admin(ctx):
+        await ctx.send("❌ You don't have permission to use this command!")
+        return
+    
+    server_id = str(ctx.guild.id)
+    
+    # Get current maps (get_maps_for_mode already lowercases the prefix)
+    current_maps = db_manager.get_maps_for_mode(server_id, prefix)
+    
+    if not current_maps:
+        await ctx.send(f"❌ No maps found for prefix **{prefix.lower()}**!")
+        return
+    
+    # Delete all maps for this prefix (remove_all_maps already lowercases the prefix)
+    success, count = db_manager.remove_all_maps(server_id, prefix)
+    
+    if success:
+        await ctx.send(
+            f"✅ **Deleted map prefix '{prefix.lower()}'**\n\n"
+            f"**Removed {count} map(s):**\n• " + "\n• ".join(current_maps) + "\n\n"
+            f"The prefix **{prefix.lower()}** has been removed from your server."
+        )
+    else:
+        await ctx.send(f"❌ Failed to delete prefix **{prefix.lower()}**!")
+
+@bot.command(name='listmapprefixes')
+async def list_map_prefixes(ctx):
+    """List all map prefixes in the database
+    
+    Shows all prefixes that have maps, including accidental ones.
+    Helps identify which prefixes are valid vs accidental.
+    
+    Usage:
+    .listmapprefixes
+    """
+    server_id = str(ctx.guild.id)
+    
+    # Get all prefixes
+    all_prefixes = db_manager.find_map_prefixes(server_id)
+    
+    if not all_prefixes:
+        await ctx.send("📋 No map prefixes found in database!\n\nThis means no maps have been added yet. Use `.addmap <prefix> <maps>` to add some.")
+        return
+    
+    # Build response
     embed = discord.Embed(
-        title=f"🗺️ Tiebreaker Map Pool ({len(MAP_POOL)} maps)",
+        title="🗺️ All Map Prefixes in Database",
+        description=f"Found {len(all_prefixes)} prefix(es) with maps\nServer ID: `{server_id}`",
         color=discord.Color.blue()
     )
     
-    # Get cooldown maps for this server
-    on_cooldown = recent_tiebreakers.get(server_id, [])
+    # Get all valid modes for comparison
+    all_modes = db_manager.get_all_game_modes()
+    valid_prefixes = set()
     
-    # Separate available and cooldown maps
-    available_maps = []
-    cooldown_maps = []
+    for mode_name, mode_data in all_modes.items():
+        # Add mode name as valid
+        valid_prefixes.add(mode_name.lower())
+        # Add elo_prefix if set
+        elo_prefix = db_manager.get_mode_elo_prefix(mode_name)
+        if elo_prefix:
+            valid_prefixes.add(elo_prefix.lower())
     
-    for map_name in sorted(MAP_POOL):
-        if map_name in on_cooldown:
-            # Show position in cooldown (1 = most recent, can't be picked for 3 PUGs)
-            position = on_cooldown.index(map_name) + 1
-            cooldown_maps.append(f"~~{map_name}~~ ({position} PUG{'s' if position != 1 else ''} ago)")
+    # Separate valid and invalid prefixes
+    valid_list = []
+    invalid_list = []
+    
+    for prefix, count in all_prefixes:
+        # Show actual database value in backticks for debugging
+        prefix_info = f"`{prefix}` ({count} maps)"
+        if prefix.lower() in valid_prefixes:
+            valid_list.append(f"✅ {prefix_info}")
         else:
-            available_maps.append(map_name)
+            invalid_list.append(f"⚠️ {prefix_info} - **ACCIDENTAL**\n   Delete with: `.deletemapprefix {prefix}`")
     
-    # Show available maps
-    if available_maps:
+    if valid_list:
         embed.add_field(
-            name=f"✅ Available ({len(available_maps)})",
-            value=", ".join(available_maps),
+            name="Valid Prefixes",
+            value="\n".join(valid_list),
             inline=False
         )
     
-    # Show maps on cooldown
-    if cooldown_maps:
+    if invalid_list:
         embed.add_field(
-            name=f"⏳ On Cooldown ({len(cooldown_maps)})",
-            value="\n".join(cooldown_maps),
-            inline=False
-        )
-        embed.add_field(
-            name="ℹ️ Cooldown Info",
-            value="Maps are on cooldown for 3 completed PUGs to prevent repeats",
+            name="⚠️ Invalid/Accidental Prefixes",
+            value="\n".join(invalid_list),
             inline=False
         )
     
-    embed.set_footer(text="Use .addmap or .removemap to modify (Admin only)")
+    await ctx.send(embed=embed)
+
+@bot.command(name='maps', aliases=['maplist'])
+async def list_maps(ctx, mode_prefix: str = None):
+    """Show all maps in the map pools
+    
+    Usage:
+    .maps              Show all maps grouped by mode
+    .maps ctf          Show only CTF maps with cooldown status
+    """
+    server_id = str(ctx.guild.id)
+    
+    if mode_prefix:
+        # Show maps for specific mode with cooldown info
+        maps = db_manager.get_maps_for_mode(server_id, mode_prefix)
+        
+        if not maps:
+            await ctx.send(f"📋 No maps configured for **{mode_prefix}**!")
+            return
+        
+        embed = discord.Embed(
+            title=f"🗺️ {mode_prefix.upper()} Map Pool ({len(maps)} maps)",
+            color=discord.Color.blue()
+        )
+        
+        # Get cooldown maps for this mode
+        on_cooldown = db_manager.get_maps_on_cooldown(server_id, mode_prefix, cooldown_count=3)
+        
+        # Separate available and cooldown maps
+        available_maps = []
+        cooldown_maps = []
+        
+        for map_name in sorted(maps):
+            if map_name in on_cooldown:
+                position = on_cooldown.index(map_name) + 1
+                cooldown_maps.append(f"~~{map_name}~~ ({position} PUG{'s' if position != 1 else ''} ago)")
+            else:
+                available_maps.append(map_name)
+        
+        # Show available maps
+        if available_maps:
+            embed.add_field(
+                name=f"✅ Available ({len(available_maps)})",
+                value=", ".join(available_maps),
+                inline=False
+            )
+        
+        # Show maps on cooldown
+        if cooldown_maps:
+            embed.add_field(
+                name=f"⏳ On Cooldown ({len(cooldown_maps)})",
+                value="\n".join(cooldown_maps),
+                inline=False
+            )
+            embed.add_field(
+                name="ℹ️ Cooldown Info",
+                value="Maps are on cooldown for 3 completed PUGs to prevent repeats",
+                inline=False
+            )
+        
+        embed.set_footer(text=f"Use .addmap {mode_prefix} <map> or .removemap {mode_prefix} <map> (Admin only)")
+    else:
+        # Show all maps grouped by mode
+        all_maps = db_manager.get_all_maps_grouped(server_id)
+        
+        if not all_maps:
+            await ctx.send("📋 No maps configured! Use `.addmap <mode> <mapname>` to add maps.")
+            return
+        
+        embed = discord.Embed(
+            title=f"🗺️ All Map Pools",
+            color=discord.Color.blue()
+        )
+        
+        for mode_prefix in sorted(all_maps.keys()):
+            maps = all_maps[mode_prefix]
+            map_list = ", ".join(sorted(maps))
+            embed.add_field(
+                name=f"{mode_prefix.upper()} ({len(maps)} maps)",
+                value=map_list,
+                inline=False
+            )
+        
+        embed.set_footer(text="Use .maps <mode> to see cooldown status for a specific mode")
     
     await ctx.send(embed=embed)
 
@@ -3284,33 +3640,36 @@ async def process_winner(ctx, pug, team, admin_override=False):
     
     if per_mode_elo:
         # Use per-mode ELO system
-        # Update mode-specific stats
+        # Get effective mode name (uses elo_prefix if set)
+        effective_mode = db_manager.get_effective_mode_for_elo(mode_name)
+        
+        # Update mode-specific stats (use effective mode for consistency)
         for uid in winner_team:
-            db_manager.update_player_mode_stats(uid, server_id, mode_name, won=True)
+            db_manager.update_player_mode_stats(uid, server_id, effective_mode, won=True)
         
         for uid in loser_team:
-            db_manager.update_player_mode_stats(uid, server_id, mode_name, won=False)
+            db_manager.update_player_mode_stats(uid, server_id, effective_mode, won=False)
         
         # Update ELO for winners
         for uid in winner_team:
-            mode_elo_data = db_manager.get_player_mode_elo(uid, server_id, mode_name)
+            mode_elo_data = db_manager.get_player_mode_elo(uid, server_id, effective_mode)
             old_elo = mode_elo_data['elo']
             if team == 'red':
                 new_elo = old_elo + K_FACTOR * (1 - expected_red)
             else:
                 new_elo = old_elo + K_FACTOR * (1 - expected_blue)
-            db_manager.update_player_mode_elo(uid, server_id, mode_name, new_elo)
+            db_manager.update_player_mode_elo(uid, server_id, effective_mode, new_elo)
             elo_changes[uid] = {'old': old_elo, 'new': new_elo, 'change': new_elo - old_elo}
         
         # Update ELO for losers
         for uid in loser_team:
-            mode_elo_data = db_manager.get_player_mode_elo(uid, server_id, mode_name)
+            mode_elo_data = db_manager.get_player_mode_elo(uid, server_id, effective_mode)
             old_elo = mode_elo_data['elo']
             if team == 'red':
                 new_elo = old_elo + K_FACTOR * (0 - expected_blue)
             else:
                 new_elo = old_elo + K_FACTOR * (0 - expected_red)
-            db_manager.update_player_mode_elo(uid, server_id, mode_name, new_elo)
+            db_manager.update_player_mode_elo(uid, server_id, effective_mode, new_elo)
             elo_changes[uid] = {'old': old_elo, 'new': new_elo, 'change': new_elo - old_elo}
     else:
         # Use global ELO system
@@ -3792,6 +4151,28 @@ async def my_stats(ctx):
     if position:
         embed.add_field(name="Leaderboard", value=f"#{position} of {total_players}", inline=True)
     
+    # Add per-mode ELOs if any modes have per-mode ELO enabled
+    modes_with_per_mode_elo = db_manager.get_modes_with_per_mode_elo()
+    if modes_with_per_mode_elo:
+        mode_elos = db_manager.get_all_player_mode_elos(str(ctx.author.id), str(ctx.guild.id))
+        
+        if mode_elos:
+            mode_elo_lines = []
+            for mode_name in modes_with_per_mode_elo:
+                if mode_name in mode_elos:
+                    mode_elo = mode_elos[mode_name]['elo']
+                    mode_rank = get_elo_rank(mode_elo)
+                    mode_wins = mode_elos[mode_name]['wins']
+                    mode_losses = mode_elos[mode_name]['losses']
+                    mode_elo_lines.append(f"**{mode_name}:** {mode_elo:.0f} ({mode_rank}) - {mode_wins}W/{mode_losses}L")
+            
+            if mode_elo_lines:
+                embed.add_field(
+                    name="📊 Per-Mode ELOs",
+                    value="\n".join(mode_elo_lines),
+                    inline=False
+                )
+    
     await ctx.send(embed=embed)
 
 @bot.command(name='topelo')
@@ -4225,6 +4606,11 @@ async def show_pug_info(ctx, pug, custom_title=None):
                         name = name.split('#')[0]
             except:
                 name = f"Player_{uid}"
+        
+        # Add captain emoji if this player is the red captain
+        if pug.get('red_captain') and str(uid) == str(pug['red_captain']):
+            name = f"👑 {name}"
+        
         red_names.append(name)
     
     blue_names = []
@@ -4251,6 +4637,11 @@ async def show_pug_info(ctx, pug, custom_title=None):
                         name = name.split('#')[0]
             except:
                 name = f"Player_{uid}"
+        
+        # Add captain emoji if this player is the blue captain
+        if pug.get('blue_captain') and str(uid) == str(pug['blue_captain']):
+            name = f"👑 {name}"
+        
         blue_names.append(name)
     
     red_team = ", ".join(red_names)
@@ -5348,11 +5739,11 @@ async def per_mode_elo_toggle(ctx, mode: str):
     
     await ctx.send(embed=embed)
 
-@bot.command(name='permodelostatus')
+@bot.command(name='permodeelostatus')
 async def per_mode_elo_status(ctx):
     """Check which modes have per-mode ELO enabled (Admin only)
     
-    Usage: .permodelostatus
+    Usage: .permodeelostatus
     """
     if not is_admin(ctx):
         await ctx.send("❌ You don't have permission to use this command!")
@@ -5376,8 +5767,11 @@ async def per_mode_elo_status(ctx):
     disabled_modes = []
     
     for mode_name, mode_data in all_modes.items():
+        elo_prefix = db_manager.get_mode_elo_prefix(mode_name)
+        prefix_text = f" [prefix: {elo_prefix}]" if elo_prefix else ""
+        
         if db_manager.is_per_mode_elo_enabled(mode_name):
-            enabled_modes.append(f"✅ **{mode_name}** - Per-mode ELO active")
+            enabled_modes.append(f"✅ **{mode_name}**{prefix_text} - Per-mode ELO active")
         else:
             disabled_modes.append(f"❌ **{mode_name}** - Uses global ELO")
     
@@ -5398,24 +5792,158 @@ async def per_mode_elo_status(ctx):
     embed.set_footer(text="Use .permodeelo <mode> to toggle per-mode ELO for a specific mode")
     
     await ctx.send(embed=embed)
+
+@bot.command(name='seteloprefix')
+async def set_elo_prefix(ctx, mode: str, prefix: str = None):
+    """Set ELO prefix for a mode to group modes with same ELO pool (Admin only)
     
-    embed = discord.Embed(
-        title="📊 Per-Mode ELO Status",
-        description=f"**Status:** {status}",
-        color=discord.Color.green() if enabled else discord.Color.red()
-    )
+    Usage:
+    .seteloprefix ctf2v2 ctf      - ctf2v2 shares ELO with other ctf modes
+    .seteloprefix ctf3v3 ctf      - ctf3v3 shares ELO with other ctf modes
+    .seteloprefix ctf5v5 ctf      - All ctf modes now share same ELO
+    .seteloprefix tam2v2 tam      - Group all tam modes
+    .seteloprefix ctf2v2 none     - Remove prefix (mode uses own name)
     
-    if enabled:
+    This allows different team sizes of the same game type to share ELO.
+    """
+    if not is_admin(ctx):
+        await ctx.send("❌ You don't have permission to use this command!")
+        return
+    
+    # Resolve mode name (handle aliases)
+    mode = mode.lower()
+    mode_data = db_manager.get_game_mode(mode)
+    if not mode_data:
+        await ctx.send(f"❌ Game mode '{mode}' does not exist! Use `.modes` to see available modes.")
+        return
+    
+    mode_name = mode  # Use the resolved mode name
+    
+    # Handle 'none' to remove prefix
+    if prefix and prefix.lower() == 'none':
+        prefix = None
+    
+    # Set the prefix
+    success, error = db_manager.set_mode_elo_prefix(mode_name, prefix)
+    
+    if not success:
+        await ctx.send(f"❌ {error}")
+        return
+    
+    # Show result
+    if prefix:
+        embed = discord.Embed(
+            title=f"✅ ELO Prefix Set: {mode_name}",
+            description=f"Mode **{mode_name}** will now use ELO prefix: **{prefix}**",
+            color=discord.Color.green()
+        )
         embed.add_field(
-            name="Current Mode",
-            value="Each game mode tracks separate ELO ratings",
+            name="What This Means",
+            value=f"• {mode_name} shares ELO with other modes using prefix '{prefix}'\n"
+                  f"• Example: If ctf2v2, ctf3v3, ctf5v5 all use prefix 'ctf', they share one ELO pool\n"
+                  f"• Player's ELO for '{prefix}' will be used in {mode_name} matches",
+            inline=False
+        )
+        embed.add_field(
+            name="Note",
+            value=f"Per-mode ELO must be enabled for {mode_name} to use this prefix.\n"
+                  f"Use `.permodeelo {mode_name}` if not already enabled.",
             inline=False
         )
     else:
+        embed = discord.Embed(
+            title=f"✅ ELO Prefix Removed: {mode_name}",
+            description=f"Mode **{mode_name}** will now use its own name for ELO",
+            color=discord.Color.blue()
+        )
         embed.add_field(
-            name="Current Mode",
-            value="All game modes share one global ELO rating",
+            name="What This Means",
+            value=f"• {mode_name} no longer shares ELO with other modes\n"
+                  f"• {mode_name} will have its own separate ELO pool",
             inline=False
+        )
+    
+    await ctx.send(embed=embed)
+
+@bot.command(name='tiebreaker')
+async def toggle_tiebreaker(ctx, mode: str, enabled: str = None):
+    """Toggle tiebreaker map selection for a mode (Admin only)
+    
+    Usage:
+    .tiebreaker tam on         Enable tiebreaker for TAM
+    .tiebreaker tam off        Disable tiebreaker for TAM
+    .tiebreaker ctf2v2         Show current tiebreaker status
+    
+    When disabled, no tiebreaker map will be shown even if maps are configured.
+    """
+    if not is_admin(ctx):
+        await ctx.send("❌ You don't have permission to use this command!")
+        return
+    
+    mode = mode.lower()
+    mode_data = db_manager.get_game_mode(mode)
+    if not mode_data:
+        await ctx.send(f"❌ Game mode '{mode}' does not exist! Use `.modes` to see available modes.")
+        return
+    
+    if enabled is None:
+        # Show current status
+        is_enabled = db_manager.is_tiebreaker_enabled(mode)
+        status = "✅ Enabled" if is_enabled else "❌ Disabled"
+        
+        embed = discord.Embed(
+            title=f"Tiebreaker Status: {mode_data['name']}",
+            description=f"**Status:** {status}",
+            color=discord.Color.green() if is_enabled else discord.Color.red()
+        )
+        
+        if is_enabled:
+            embed.add_field(
+                name="Tiebreaker Enabled",
+                value=f"Random tiebreaker maps will be selected for 4v4 matches in {mode}",
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="Tiebreaker Disabled",
+                value=f"No tiebreaker maps will be shown for matches in {mode}",
+                inline=False
+            )
+        
+        embed.set_footer(text=f"Use .tiebreaker {mode} on/off to change")
+        await ctx.send(embed=embed)
+        return
+    
+    # Toggle tiebreaker
+    enabled_str = enabled.lower()
+    if enabled_str not in ['on', 'off', 'enable', 'disable', 'true', 'false', '1', '0']:
+        await ctx.send("❌ Invalid option! Use: on, off, enable, or disable")
+        return
+    
+    enable_tiebreaker = enabled_str in ['on', 'enable', 'true', '1']
+    
+    success, error = db_manager.set_tiebreaker_enabled(mode, enable_tiebreaker)
+    
+    if not success:
+        await ctx.send(f"❌ {error}")
+        return
+    
+    if enable_tiebreaker:
+        embed = discord.Embed(
+            title=f"✅ Tiebreaker Enabled: {mode_data['name']}",
+            description=f"Tiebreaker maps will now be shown for 4v4 matches in **{mode}**",
+            color=discord.Color.green()
+        )
+        embed.add_field(
+            name="Note",
+            value=f"Make sure maps are configured with `.addmap {mode} <mapname>`",
+            inline=False
+        )
+    else:
+        embed = discord.Embed(
+            title=f"❌ Tiebreaker Disabled: {mode_data['name']}",
+            description=f"No tiebreaker maps will be shown for matches in **{mode}**",
+            color=discord.Color.red()
         )
     
     await ctx.send(embed=embed)

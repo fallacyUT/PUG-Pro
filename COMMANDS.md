@@ -80,7 +80,7 @@ Originally developed for the UT2004 Unreal Fight Club Discord Community
 ### Per-Mode ELO Management (v2.0 NEW!)
 ```
 .permodeelo <mode>                    - Toggle per-mode ELO for specific mode
-.permodelostatus                      - Show which modes have per-mode ELO enabled
+.permodeelostatus                      - Show which modes have per-mode ELO enabled
 .setmodeelo <mode> @player <elo>      - Set player's ELO for specific mode
 ```
 
@@ -110,6 +110,34 @@ Originally developed for the UT2004 Unreal Fight Club Discord Community
 .autopick <mode>             - Enable auto team picking for mode
 .autopickoff <mode>          - Disable auto team picking
 .setmapcooldown <count>      - Set map cooldown period
+```
+
+### Map Pool Management (v2.1)
+```
+.addmap <prefix> <maps>          - Add map(s) to mode's pool (comma-separated)
+                                   Example: .addmap ctf CTF-Face, CTF-LavaGiant
+.removemap <prefix> <map>        - Remove map from mode's pool
+.removeallmaps <prefix>          - Remove ALL maps from mode's pool
+.deletemapprefix <prefix>        - Delete accidental/invalid map prefix
+.confirmdeletemapprefix <prefix> - Confirm deletion of map prefix
+.listmapprefixes                 - List all map prefixes (valid and accidental)
+.maps                            - Show all maps grouped by mode
+.maps <prefix>                   - Show maps for specific mode with cooldowns
+```
+
+### Tiebreaker Management (v2.1)
+```
+.tiebreaker <mode> on            - Enable tiebreaker for mode
+.tiebreaker <mode> off           - Disable tiebreaker for mode
+.tiebreaker <mode>               - Check tiebreaker status
+```
+
+### ELO Prefix System (v2.0)
+```
+.seteloprefix <mode> <prefix>    - Set ELO prefix to group modes
+                                   Example: .seteloprefix ctf2v2 ctf
+.seteloprefix <mode> none        - Remove ELO prefix from mode
+.permodeelostatus                - Shows which modes have per-mode ELO and prefixes
 ```
 
 ### Data Management
@@ -149,7 +177,7 @@ Enable per-mode ELO for individual modes instead of all-or-nothing:
 ```
 .permodeelo tam              - Toggle per-mode ELO for TAM mode
 .permodeelo ctf              - Toggle per-mode ELO for CTF mode
-.permodelostatus             - See which modes have per-mode ELO
+.permodeelostatus             - See which modes have per-mode ELO
 
 .setmodeelo tam @Player 1700 - Set TAM-specific ELO
 .setmodeelo ctf @Player 1100 - Set CTF-specific ELO
@@ -190,7 +218,7 @@ Queue timeout now resets every time a player joins, not just when the first play
 .permodeelo tam              → Enable/disable per-mode ELO for TAM
 .setmodeelo tam @Player 1650 → Set Player's TAM ELO to 1650
 .setmodeelo ctf @Player 1200 → Set Player's CTF ELO to 1200
-.permodelostatus             → Show which modes have per-mode ELO
+.permodeelostatus             → Show which modes have per-mode ELO
 ```
 
 ### CSV Import Format
@@ -227,7 +255,7 @@ SkillMaster,200,'906568123456789012
 
 ### Admin Role Required
 - .setelo, .setpugs, .deleteplayer
-- **NEW: .permodeelo, .permodelostatus, .setmodeelo**
+- **NEW: .permodeelo, .permodeelostatus, .setmodeelo**
 - .setwinner, .undowinner, .forcedeadpug, .undodeadpug
 - .reset, .resetall, .add, .remove
 - .addmode, .removemode, .addalias, .removealias
@@ -305,7 +333,7 @@ Use whichever name fits your community!
 
 ### New Commands
 - `.permodeelo <mode>` - Toggle per-mode ELO for specific mode
-- `.permodelostatus` - Show per-mode ELO breakdown
+- `.permodeelostatus` - Show per-mode ELO breakdown
 - `.setmodeelo <mode> <player> <elo>` - Set mode-specific ELO
 - `.pugproon` / `.pugprooff` - Aliases for bot control
 
@@ -324,4 +352,4 @@ Use whichever name fits your community!
 **For:** Competitive Gaming Communities  
 *Bot made for Competitive Gaming Communities to use for Pick Up Games (PUGs)*
 
-**Version 2.0** - Mode-Specific Per-Mode ELO & Queue Timeout Fix
+**Version 2.1** - Mode-Specific Per-Mode ELO & Queue Timeout Fix
