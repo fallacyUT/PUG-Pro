@@ -336,13 +336,14 @@ class PUGQueue:
             
             # If was in ready check and queue is no longer full, cancel ready check
             if was_in_ready_check and len(self.queue) < self.team_size:
-                # Cancel ready check task
-                if self.ready_check_task:
-                    self.ready_check_task.cancel()
-                
-                # Return to waiting state
+                # IMPORTANT: Change state BEFORE cancelling task to prevent race condition
+                # This ensures wait_for_ready_check sees the correct state when it wakes up
                 self.state = 'waiting'
                 self.ready_responses = {}
+                
+                # Now cancel the ready check task
+                if self.ready_check_task:
+                    self.ready_check_task.cancel()
                 
                 mode_data = db_manager.get_game_mode(self.game_mode_name)
                 remaining = len(self.queue)
@@ -1816,11 +1817,13 @@ async def on_reaction_add(reaction, user):
                     # Check if queue is still full after decline
                     if len(queue.queue) < queue.team_size:
                         # Queue is no longer full, abort ready check and return to waiting
-                        if queue.ready_check_task:
-                            queue.ready_check_task.cancel()
-                        
+                        # IMPORTANT: Change state BEFORE cancelling task to prevent race condition
                         queue.state = 'waiting'
                         queue.ready_responses = {}
+                        
+                        # Now cancel the ready check task
+                        if queue.ready_check_task:
+                            queue.ready_check_task.cancel()
                         
                         mode_data = db_manager.get_game_mode(queue.game_mode_name)
                         remaining = len(queue.queue)
