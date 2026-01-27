@@ -233,6 +233,21 @@ class DatabaseManager:
             conn.commit()
             print("✅ Database migration: Added 'tiebreaker_map' column to pugs table")
         
+        # Migration: Add captain columns if they don't exist
+        try:
+            cursor.execute("SELECT red_captain FROM pugs LIMIT 1")
+        except:
+            cursor.execute("ALTER TABLE pugs ADD COLUMN red_captain TEXT")
+            conn.commit()
+            print("✅ Database migration: Added 'red_captain' column to pugs table")
+        
+        try:
+            cursor.execute("SELECT blue_captain FROM pugs LIMIT 1")
+        except:
+            cursor.execute("ALTER TABLE pugs ADD COLUMN blue_captain TEXT")
+            conn.commit()
+            print("✅ Database migration: Added 'blue_captain' column to pugs table")
+        
         # PUG teams table (many-to-many relationship)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS pug_teams (
@@ -786,16 +801,19 @@ class DatabaseManager:
     
     # PUG operations
     def add_pug(self, red_team: List[str], blue_team: List[str], game_mode: str, 
-                avg_red_elo: float, avg_blue_elo: float, tiebreaker_map: str = None) -> int:
+                avg_red_elo: float, avg_blue_elo: float, tiebreaker_map: str = None,
+                red_captain: str = None, blue_captain: str = None) -> int:
         """Add a new PUG and return the pug_id"""
         conn = self.get_connection()
         cursor = conn.cursor()
         
         # Insert PUG
         cursor.execute('''
-            INSERT INTO pugs (game_mode, avg_red_elo, avg_blue_elo, tiebreaker_map)
-            VALUES (?, ?, ?, ?)
-        ''', (game_mode, avg_red_elo, avg_blue_elo, tiebreaker_map))
+            INSERT INTO pugs (game_mode, avg_red_elo, avg_blue_elo, tiebreaker_map, red_captain, blue_captain)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (game_mode, avg_red_elo, avg_blue_elo, tiebreaker_map, 
+              str(red_captain) if red_captain else None, 
+              str(blue_captain) if blue_captain else None))
         
         pug_id = cursor.lastrowid
         
@@ -847,7 +865,7 @@ class DatabaseManager:
         cursor = conn.cursor()
         
         cursor.execute('''
-            SELECT pug_id, game_mode, winner, avg_red_elo, avg_blue_elo, timestamp, status, tiebreaker_map
+            SELECT pug_id, game_mode, winner, avg_red_elo, avg_blue_elo, timestamp, status, tiebreaker_map, red_captain, blue_captain
             FROM pugs
             ORDER BY pug_id DESC
             LIMIT ?
@@ -880,6 +898,8 @@ class DatabaseManager:
                 'timestamp': row[5],
                 'status': row[6] if len(row) > 6 else 'active',
                 'tiebreaker_map': row[7] if len(row) > 7 else None,
+                'red_captain': row[8] if len(row) > 8 else None,
+                'blue_captain': row[9] if len(row) > 9 else None,
                 'red_team': red_team,
                 'blue_team': blue_team
             })

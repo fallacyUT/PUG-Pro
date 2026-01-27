@@ -341,6 +341,14 @@ class PUGQueue:
                 self.state = 'waiting'
                 self.ready_responses = {}
                 
+                # Delete the old ready check message so it can be reposted when queue refills
+                if self.ready_check_message:
+                    try:
+                        await self.ready_check_message.delete()
+                    except:
+                        pass
+                    self.ready_check_message = None
+                
                 # Now cancel the ready check task
                 if self.ready_check_task:
                     self.ready_check_task.cancel()
@@ -645,6 +653,14 @@ class PUGQueue:
                 await self.check_queue_full()
             else:
                 # Queue didn't fill, return to waiting state
+                # Delete the old ready check message so it can be reposted when queue refills
+                if self.ready_check_message:
+                    try:
+                        await self.ready_check_message.delete()
+                    except:
+                        pass
+                    self.ready_check_message = None
+                
                 self.state = 'waiting'
         else:
             # Save initial queue order NOW before any picks happen
@@ -1228,7 +1244,9 @@ class PUGQueue:
                 game_mode=self.game_mode_name,
                 avg_red_elo=avg_red_elo,
                 avg_blue_elo=avg_blue_elo,
-                tiebreaker_map=self.selected_tiebreaker if self.team_size == 8 else None
+                tiebreaker_map=self.selected_tiebreaker if self.team_size == 8 else None,
+                red_captain=self.red_captain,
+                blue_captain=self.blue_captain
             )
             
             await self.channel.send(f"This is PUG #{pug_number}. Use `.winner red` or `.winner blue` to report the result")
@@ -1820,6 +1838,14 @@ async def on_reaction_add(reaction, user):
                         # IMPORTANT: Change state BEFORE cancelling task to prevent race condition
                         queue.state = 'waiting'
                         queue.ready_responses = {}
+                        
+                        # Delete the old ready check message so it can be reposted when queue refills
+                        if queue.ready_check_message:
+                            try:
+                                await queue.ready_check_message.delete()
+                            except:
+                                pass
+                            queue.ready_check_message = None
                         
                         # Now cancel the ready check task
                         if queue.ready_check_task:
@@ -4580,6 +4606,11 @@ async def show_pug_info(ctx, pug, custom_title=None):
                         name = name.split('#')[0]
             except:
                 name = f"Player_{uid}"
+        
+        # Add captain emoji if this player is the red captain
+        if pug.get('red_captain') and str(uid) == str(pug['red_captain']):
+            name = f"👑 {name}"
+        
         red_names.append(name)
     
     blue_names = []
@@ -4606,6 +4637,11 @@ async def show_pug_info(ctx, pug, custom_title=None):
                         name = name.split('#')[0]
             except:
                 name = f"Player_{uid}"
+        
+        # Add captain emoji if this player is the blue captain
+        if pug.get('blue_captain') and str(uid) == str(pug['blue_captain']):
+            name = f"👑 {name}"
+        
         blue_names.append(name)
     
     red_team = ", ".join(red_names)
