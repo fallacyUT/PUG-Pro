@@ -268,8 +268,14 @@ class PUGQueue:
                 
                 # Check if all players are now ready - if so, proceed immediately
                 all_ready = all(self.ready_responses.get(uid, False) == True for uid in self.queue)
-                if all_ready and self.ready_check_task:
-                    self.ready_check_task.cancel()
+                if all_ready:
+                    # Cancel the timeout task if it exists
+                    if self.ready_check_task:
+                        self.ready_check_task.cancel()
+                        self.ready_check_task = None
+                    # Call the completion handler directly
+                    # complete_ready_check_all_ready has its own state guard to prevent duplicates
+                    await self.complete_ready_check_all_ready()
             
             await self.check_queue_full()
             return True
@@ -492,6 +498,14 @@ class PUGQueue:
             else:
                 self.ready_responses[uid] = False
         
+        # Check if all players are already ready from persistent ready status
+        # If so, skip the ready check entirely and proceed immediately
+        all_already_ready = all(self.ready_responses.get(uid, False) == True for uid in self.queue)
+        if all_already_ready:
+            await self.channel.send(f"✅ All **{mode_data['name']}** players have persistent ready status! Skipping ready check...")
+            await self.complete_ready_check_all_ready()
+            return
+        
         embed = discord.Embed(
             title="🎮 Ready Check", 
             description=f"**{mode_data['name']}** ({self.max_per_team}v{self.max_per_team}) - Queue is full!\n"
@@ -508,15 +522,14 @@ class PUGQueue:
         # Store message BEFORE adding reactions (prevents race condition)
         self.ready_check_message = msg
         
+        # CRITICAL: Create the timeout task BEFORE adding reactions
+        # This prevents a race condition where a player reacts before the task is set,
+        # causing the reaction handler to skip completion (it checks ready_check_task != None)
+        self.ready_check_task = asyncio.create_task(self.wait_for_ready_check(msg))
+        
         # Add reactions
         await msg.add_reaction("✅")
         await msg.add_reaction("❌")
-        
-        # Small delay to ensure reactions are fully registered
-        # This prevents race condition if players click too fast
-        await asyncio.sleep(0.5)
-        
-        self.ready_check_task = asyncio.create_task(self.wait_for_ready_check(msg))
     
     def _get_ready_status_text(self):
         """Generate ready status text for display"""
@@ -575,6 +588,52 @@ class PUGQueue:
             except:
                 pass  # Message might be deleted
     
+    async def complete_ready_check_all_ready(self):
+        """Called when all players are ready - handles the completion logic separately from the timeout task.
+        
+        This method is called directly from the reaction handler when all players have readied up,
+        rather than relying on the cancelled timeout task to continue executing (which can fail
+        due to CancelledError propagation in Python's asyncio).
+        """
+        # Prevent duplicate execution
+        if self.state != 'ready_check':
+            return
+        
+        # Save initial queue order NOW before any picks happen
+        self.initial_queue = self.queue.copy()
+        
+        # Check if this is a 1v1 mode (2 players total)
+        if self.team_size == 2:
+            await self.channel.send("✅ All players ready! Starting 1v1 match...")
+            # Automatically assign players to teams for 1v1
+            self.red_team = [self.queue[0]]
+            self.blue_team = [self.queue[1]]
+            self.red_captain = self.queue[0]
+            self.blue_captain = self.queue[1]
+            self.state = 'picking'
+            
+            # Skip picking phase and go straight to finish
+            await self.finish_picking()
+        else:
+            # Check if autopick is enabled
+            if self.autopick_mode:
+                # Skip captain selection entirely, go straight to autopick
+                await self.channel.send("All players ready! Auto-balancing teams...")
+                self.state = 'picking'
+                
+                # Validate queue is still in good state before autopicking
+                if len(self.queue) == self.team_size:
+                    await self.autopick_teams()
+                else:
+                    # Queue changed during ready check, abort
+                    await self.channel.send(f"❌ Queue changed during ready check. Current: {len(self.queue)}/{self.team_size}")
+                    self.state = 'waiting'
+            else:
+                # Manual pick mode - need captain selection
+                await self.channel.send(f"All players ready! Use `.captain` to become a captain! Auto-selecting in {CAPTAIN_WAIT_TIME} seconds...")
+                self.state = 'selecting_captains'
+                await self.start_captain_selection()
+
     async def wait_for_ready_check(self, msg):
         try:
             # Wait for timeout, but can be cancelled early if everyone is ready
@@ -582,12 +641,11 @@ class PUGQueue:
         except asyncio.CancelledError:
             # Task was cancelled - check why
             # If state is no longer 'ready_check', it was cancelled due to queue no longer being full
-            # In that case, don't remove any players
-            if self.state != 'ready_check':
-                return
-            # Otherwise, it was cancelled because everyone is ready - proceed normally
+            # or because everyone readied up (and completion is handled by complete_ready_check_all_ready)
+            # In either case, just return - don't try to continue processing
+            return
         
-        # Only process if still in ready_check state
+        # Only process if still in ready_check state (timeout expired naturally)
         if self.state != 'ready_check':
             return
         
@@ -663,40 +721,9 @@ class PUGQueue:
                 
                 self.state = 'waiting'
         else:
-            # Save initial queue order NOW before any picks happen
-            self.initial_queue = self.queue.copy()
-            
-            # Check if this is a 1v1 mode (2 players total)
-            if self.team_size == 2:
-                await self.channel.send("✅ All players ready! Starting 1v1 match...")
-                # Automatically assign players to teams for 1v1
-                self.red_team = [self.queue[0]]
-                self.blue_team = [self.queue[1]]
-                self.red_captain = self.queue[0]
-                self.blue_captain = self.queue[1]
-                self.state = 'picking'
-                
-                # Skip picking phase and go straight to finish
-                await self.finish_picking()
-            else:
-                # Check if autopick is enabled
-                if self.autopick_mode:
-                    # Skip captain selection entirely, go straight to autopick
-                    await self.channel.send("All players ready! Auto-balancing teams...")
-                    self.state = 'picking'
-                    
-                    # Validate queue is still in good state before autopicking
-                    if len(self.queue) == self.team_size:
-                        await self.autopick_teams()
-                    else:
-                        # Queue changed during ready check, abort
-                        await self.channel.send(f"❌ Queue changed during ready check. Current: {len(self.queue)}/{self.team_size}")
-                        self.state = 'waiting'
-                else:
-                    # Manual pick mode - need captain selection
-                    await self.channel.send(f"All players ready! Use `.captain` to become a captain! Auto-selecting in {CAPTAIN_WAIT_TIME} seconds...")
-                    self.state = 'selecting_captains'
-                    await self.start_captain_selection()
+            # Everyone is ready! Call the completion handler
+            # (This path is hit when timeout expires and everyone happened to be ready)
+            await self.complete_ready_check_all_ready()
     
     async def start_captain_selection(self):
         # Message already sent in wait_for_ready_check
@@ -1808,9 +1835,14 @@ async def on_reaction_add(reaction, user):
                 # Check if everyone is now ready - proceed immediately!
                 all_ready = all(queue.ready_responses.get(uid, False) == True for uid in queue.queue)
                 
-                if all_ready and queue.ready_check_task:
-                    # Cancel the timeout task and proceed immediately
-                    queue.ready_check_task.cancel()
+                if all_ready:
+                    # Cancel the timeout task if it exists
+                    if queue.ready_check_task:
+                        queue.ready_check_task.cancel()
+                        queue.ready_check_task = None
+                    # Call the completion handler directly (don't rely on cancelled task)
+                    # complete_ready_check_all_ready has its own state guard to prevent duplicates
+                    await queue.complete_ready_check_all_ready()
                 
             elif str(reaction.emoji) == "❌":
                 # Player actively declined ready check
@@ -1865,9 +1897,14 @@ async def on_reaction_add(reaction, user):
                         # Check if all remaining players are now ready
                         if queue.queue:  # If queue still has players
                             all_ready = all(queue.ready_responses.get(uid, False) == True for uid in queue.queue)
-                            if all_ready and queue.ready_check_task:
-                                # Everyone else is ready, proceed immediately!
-                                queue.ready_check_task.cancel()
+                            if all_ready:
+                                # Cancel the timeout task if it exists
+                                if queue.ready_check_task:
+                                    queue.ready_check_task.cancel()
+                                    queue.ready_check_task = None
+                                # Call the completion handler directly
+                                # complete_ready_check_all_ready has its own state guard to prevent duplicates
+                                await queue.complete_ready_check_all_ready()
 
 @bot.event
 async def on_command_error(ctx, error):
